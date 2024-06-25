@@ -374,7 +374,7 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RS::SurfaceData &p_surface)
 
 	if (new_surface.vertex_data.size()) {
 		// If we have an uncompressed surface that contains normals, but not tangents, we need to differentiate the array
-		// from a compressed array in the shader. To do so, we allow the the normal to read 4 components out of the buffer
+		// from a compressed array in the shader. To do so, we allow the normal to read 4 components out of the buffer
 		// But only give it 2 components per normal. So essentially, each vertex reads the next normal in normal.zw.
 		// This allows us to avoid adding a shader permutation, and avoid passing dummy tangents. Since the stride is kept small
 		// this should still be a net win for bandwidth.
@@ -1040,7 +1040,7 @@ void MeshStorage::update_mesh_instances() {
 
 	//process skeletons and blend shapes
 	uint64_t frame = RSG::rasterizer->get_frame_number();
-	bool uses_motion_vectors = (RSG::viewport->get_num_viewports_with_motion_vectors() > 0);
+	bool uses_motion_vectors = (RSG::viewport->get_num_viewports_with_motion_vectors() > 0) || (RendererCompositorStorage::get_singleton()->get_num_compositor_effects_with_motion_vectors() > 0);
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 
 	while (dirty_mesh_instance_arrays.first()) {
@@ -1711,7 +1711,7 @@ void MeshStorage::multimesh_instance_set_transform(RID p_multimesh, int p_index,
 
 	_multimesh_make_local(multimesh);
 
-	bool uses_motion_vectors = (RSG::viewport->get_num_viewports_with_motion_vectors() > 0);
+	bool uses_motion_vectors = (RSG::viewport->get_num_viewports_with_motion_vectors() > 0) || (RendererCompositorStorage::get_singleton()->get_num_compositor_effects_with_motion_vectors() > 0);
 	if (uses_motion_vectors) {
 		_multimesh_enable_motion_vectors(multimesh);
 	}
@@ -1934,7 +1934,7 @@ void MeshStorage::multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_b
 	ERR_FAIL_NULL(multimesh);
 	ERR_FAIL_COND(p_buffer.size() != (multimesh->instances * (int)multimesh->stride_cache));
 
-	bool uses_motion_vectors = (RSG::viewport->get_num_viewports_with_motion_vectors() > 0);
+	bool uses_motion_vectors = (RSG::viewport->get_num_viewports_with_motion_vectors() > 0) || (RendererCompositorStorage::get_singleton()->get_num_compositor_effects_with_motion_vectors() > 0);
 	if (uses_motion_vectors) {
 		_multimesh_enable_motion_vectors(multimesh);
 	}

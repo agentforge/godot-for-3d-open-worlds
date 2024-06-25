@@ -36,6 +36,7 @@
 #include "editor/gui/editor_toaster.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/control.h"
+#include "scene/gui/margin_container.h"
 #include "scene/gui/tree.h"
 
 EditorCommandPalette *EditorCommandPalette::singleton = nullptr;
@@ -348,7 +349,7 @@ EditorCommandPalette::EditorCommandPalette() {
 
 	command_search_box = memnew(LineEdit);
 	command_search_box->set_placeholder(TTR("Filter Commands"));
-	command_search_box->connect("gui_input", callable_mp(this, &EditorCommandPalette::_sbox_input));
+	command_search_box->connect(SceneStringName(gui_input), callable_mp(this, &EditorCommandPalette::_sbox_input));
 	command_search_box->connect("text_changed", callable_mp(this, &EditorCommandPalette::_update_command_search));
 	command_search_box->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	command_search_box->set_clear_button_enabled(true);

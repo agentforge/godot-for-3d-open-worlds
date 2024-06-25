@@ -30,11 +30,11 @@
 		[/codeblock]
 		Node paths cannot check whether they are valid and may point to nodes or properties that do not exist. Their meaning depends entirely on the context in which they're used.
 		You usually do not have to worry about the [NodePath] type, as strings are automatically converted to the type when necessary. There are still times when defining node paths is useful. For example, exported [NodePath] properties allow you to easily select any node within the currently edited scene. They are also automatically updated when moving, renaming or deleting nodes in the scene tree editor. See also [annotation @GDScript.@export_node_path].
-		See also [StringName], which is a similar type designed for optimised strings.
+		See also [StringName], which is a similar type designed for optimized strings.
 		[b]Note:[/b] In a boolean context, a [NodePath] will evaluate to [code]false[/code] if it is empty ([code]NodePath("")[/code]). Otherwise, a [NodePath] will always evaluate to [code]true[/code].
 	</description>
 	<tutorials>
-		<link title="2D Role Playing Game Demo">https://godotengine.org/asset-library/asset/520</link>
+		<link title="2D Role Playing Game (RPG) Demo">https://godotengine.org/asset-library/asset/2729</link>
 	</tutorials>
 	<constructors>
 		<constructor name="NodePath">
@@ -197,6 +197,16 @@
 			<return type="bool" />
 			<description>
 				Returns [code]true[/code] if the node path has been constructed from an empty [String] ([code]""[/code]).
+			</description>
+		</method>
+		<method name="slice" qualifiers="const">
+			<return type="NodePath" />
+			<param index="0" name="begin" type="int" />
+			<param index="1" name="end" type="int" default="2147483647" />
+			<description>
+				Returns the slice of the [NodePath], from [param begin] (inclusive) to [param end] (exclusive), as a new [NodePath].
+				The absolute value of [param begin] and [param end] will be clamped to the sum of [method get_name_count] and [method get_subname_count], so the default value for [param end] makes it slice to the end of the [NodePath] by default (i.e. [code]path.slice(1)[/code] is a shorthand for [code]path.slice(1, path.get_name_count() + path.get_subname_count())[/code]).
+				If either [param begin] or [param end] are negative, they will be relative to the end of the [NodePath] (i.e. [code]path.slice(0, -2)[/code] is a shorthand for [code]path.slice(0, path.get_name_count() + path.get_subname_count() - 2)[/code]).
 			</description>
 		</method>
 	</methods>

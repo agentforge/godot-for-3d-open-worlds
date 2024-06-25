@@ -762,7 +762,7 @@ void AudioServer::set_bus_count(int p_count) {
 		buses[i]->bypass = false;
 		buses[i]->volume_db = 0;
 		if (i > 0) {
-			buses[i]->send = SceneStringNames::get_singleton()->Master;
+			buses[i]->send = SceneStringName(Master);
 		}
 
 		bus_map[attempt] = buses[i];
@@ -1600,7 +1600,7 @@ void AudioServer::set_bus_layout(const Ref<AudioBusLayout> &p_bus_layout) {
 	for (int i = 0; i < p_bus_layout->buses.size(); i++) {
 		Bus *bus = memnew(Bus);
 		if (i == 0) {
-			bus->name = SceneStringNames::get_singleton()->Master;
+			bus->name = SceneStringName(Master);
 		} else {
 			bus->name = p_bus_layout->buses[i].name;
 			bus->send = p_bus_layout->buses[i].send;
@@ -1691,6 +1691,19 @@ void AudioServer::set_input_device(const String &p_name) {
 void AudioServer::set_enable_tagging_used_audio_streams(bool p_enable) {
 	tag_used_audio_streams = p_enable;
 }
+
+#ifdef TOOLS_ENABLED
+void AudioServer::get_argument_options(const StringName &p_function, int p_idx, List<String> *r_options) const {
+	const String pf = p_function;
+	if ((p_idx == 0 && pf == "get_bus_index") || (p_idx == 1 && pf == "set_bus_send")) {
+		for (const AudioServer::Bus *E : buses) {
+			r_options->push_back(String(E->name).quote());
+		}
+	}
+
+	Object::get_argument_options(p_function, p_idx, r_options);
+}
+#endif
 
 void AudioServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_bus_count", "amount"), &AudioServer::set_bus_count);
@@ -1910,5 +1923,5 @@ void AudioBusLayout::_get_property_list(List<PropertyInfo> *p_list) const {
 
 AudioBusLayout::AudioBusLayout() {
 	buses.resize(1);
-	buses.write[0].name = SceneStringNames::get_singleton()->Master;
+	buses.write[0].name = SceneStringName(Master);
 }

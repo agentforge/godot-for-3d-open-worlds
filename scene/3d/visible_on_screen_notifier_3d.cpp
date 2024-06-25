@@ -30,15 +30,13 @@
 
 #include "visible_on_screen_notifier_3d.h"
 
-#include "scene/scene_string_names.h"
-
 void VisibleOnScreenNotifier3D::_visibility_enter() {
 	if (!is_inside_tree() || Engine::get_singleton()->is_editor_hint()) {
 		return;
 	}
 
 	on_screen = true;
-	emit_signal(SceneStringNames::get_singleton()->screen_entered);
+	emit_signal(SceneStringName(screen_entered));
 	_screen_enter();
 }
 void VisibleOnScreenNotifier3D::_visibility_exit() {
@@ -47,7 +45,7 @@ void VisibleOnScreenNotifier3D::_visibility_exit() {
 	}
 
 	on_screen = false;
-	emit_signal(SceneStringNames::get_singleton()->screen_exited);
+	emit_signal(SceneStringName(screen_exited));
 	_screen_exit();
 }
 
@@ -77,16 +75,6 @@ void VisibleOnScreenNotifier3D::_notification(int p_what) {
 			on_screen = false;
 		} break;
 	}
-}
-
-PackedStringArray VisibleOnScreenNotifier3D::get_configuration_warnings() const {
-	PackedStringArray warnings = VisualInstance3D::get_configuration_warnings();
-
-	if (OS::get_singleton()->get_current_rendering_method() == "gl_compatibility") {
-		warnings.push_back(RTR("VisibleOnScreenNotifier3D nodes are not supported when using the GL Compatibility backend yet. Support will be added in a future release."));
-	}
-
-	return warnings;
 }
 
 void VisibleOnScreenNotifier3D::_bind_methods() {

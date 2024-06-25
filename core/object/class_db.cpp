@@ -31,7 +31,6 @@
 #include "class_db.h"
 
 #include "core/config/engine.h"
-#include "core/core_string_names.h"
 #include "core/io/resource_loader.h"
 #include "core/object/script_language.h"
 #include "core/os/mutex.h"
@@ -138,7 +137,7 @@ public:
 		return nullptr;
 	}
 
-	static void placeholder_instance_free_property_list(GDExtensionClassInstancePtr p_instance, const GDExtensionPropertyInfo *p_list) {
+	static void placeholder_instance_free_property_list(GDExtensionClassInstancePtr p_instance, const GDExtensionPropertyInfo *p_list, uint32_t p_count) {
 	}
 
 	static GDExtensionBool placeholder_instance_property_can_revert(GDExtensionClassInstancePtr p_instance, GDExtensionConstStringNamePtr p_name) {
@@ -178,11 +177,24 @@ public:
 		while (native_parent->gdextension) {
 			native_parent = native_parent->inherits_ptr;
 		}
+		ERR_FAIL_NULL_V(native_parent->creation_func, nullptr);
 
 		// Construct a placeholder.
 		Object *obj = native_parent->creation_func();
+
+		// ClassDB::set_object_extension_instance() won't be called for placeholders.
+		// We need need to make sure that all the things it would have done (even if
+		// done in a different way to support placeholders) will also be done here.
+
 		obj->_extension = ClassDB::get_placeholder_extension(ti->name);
 		obj->_extension_instance = memnew(PlaceholderExtensionInstance(ti->name));
+
+#ifdef TOOLS_ENABLED
+		if (obj->_extension->track_instance) {
+			obj->_extension->track_instance(obj->_extension->tracking_userdata, obj);
+		}
+#endif
+
 		return obj;
 	}
 
@@ -412,8 +424,8 @@ uint32_t ClassDB::get_api_hash(APIType p_api) {
 			for (const StringName &F : snames) {
 				MethodInfo &mi = t->signal_map[F];
 				hash = hash_murmur3_one_64(F.hash(), hash);
-				for (int i = 0; i < mi.arguments.size(); i++) {
-					hash = hash_murmur3_one_64(mi.arguments[i].type, hash);
+				for (const PropertyInfo &pi : mi.arguments) {
+					hash = hash_murmur3_one_64(pi.type, hash);
 				}
 			}
 		}
@@ -493,7 +505,7 @@ Object *ClassDB::_instantiate_internal(const StringName &p_class, bool p_require
 		ERR_FAIL_NULL_V_MSG(ti->creation_func, nullptr, "Class '" + String(p_class) + "' or its base class cannot be instantiated.");
 	}
 #ifdef TOOLS_ENABLED
-	if (ti->api == API_EDITOR && !Engine::get_singleton()->is_editor_hint()) {
+	if ((ti->api == API_EDITOR || ti->api == API_EDITOR_EXTENSION) && !Engine::get_singleton()->is_editor_hint()) {
 		ERR_PRINT("Class '" + String(p_class) + "' can only be instantiated by editor.");
 		return nullptr;
 	}
@@ -501,19 +513,23 @@ Object *ClassDB::_instantiate_internal(const StringName &p_class, bool p_require
 	if (ti->gdextension && ti->gdextension->create_instance) {
 		ObjectGDExtension *extension = ti->gdextension;
 #ifdef TOOLS_ENABLED
-		if (!p_require_real_class && ti->gdextension->is_runtime && Engine::get_singleton()->is_editor_hint()) {
+		if (!p_require_real_class && ti->is_runtime && Engine::get_singleton()->is_editor_hint()) {
 			extension = get_placeholder_extension(ti->name);
 		}
 #endif
-		Object *obj = (Object *)extension->create_instance(extension->class_userdata);
-
+		return (Object *)extension->create_instance(extension->class_userdata);
+	} else {
 #ifdef TOOLS_ENABLED
-		if (extension->track_instance) {
-			extension->track_instance(extension->tracking_userdata, obj);
+		if (!p_require_real_class && ti->is_runtime && Engine::get_singleton()->is_editor_hint()) {
+			if (!ti->inherits_ptr || !ti->inherits_ptr->creation_func) {
+				ERR_PRINT(vformat("Cannot make a placeholder instance of runtime class %s because its parent cannot be constructed.", ti->name));
+			} else {
+				ObjectGDExtension *extension = get_placeholder_extension(ti->name);
+				return (Object *)extension->create_instance(extension->class_userdata);
+			}
 		}
 #endif
-		return obj;
-	} else {
+
 		return ti->creation_func();
 	}
 }
@@ -544,34 +560,53 @@ ObjectGDExtension *ClassDB::get_placeholder_extension(const StringName &p_class)
 		}
 		ERR_FAIL_NULL_V_MSG(ti, nullptr, "Cannot get class '" + String(p_class) + "'.");
 		ERR_FAIL_COND_V_MSG(ti->disabled, nullptr, "Class '" + String(p_class) + "' is disabled.");
-		ERR_FAIL_NULL_V_MSG(ti->gdextension, nullptr, "Class '" + String(p_class) + "' has no native extension.");
 	}
 
+	// Make a "fake" extension to act as a placeholder.
 	placeholder_extensions[p_class] = ObjectGDExtension();
 	placeholder_extension = placeholder_extensions.getptr(p_class);
 
-	// Make a "fake" extension to act as a placeholder.
-	placeholder_extension->library = ti->gdextension->library;
-	placeholder_extension->parent = ti->gdextension->parent;
-	placeholder_extension->children = ti->gdextension->children;
-	placeholder_extension->parent_class_name = ti->gdextension->parent_class_name;
-	placeholder_extension->class_name = ti->gdextension->class_name;
-	placeholder_extension->editor_class = ti->gdextension->editor_class;
-	placeholder_extension->reloadable = ti->gdextension->reloadable;
-	placeholder_extension->is_virtual = ti->gdextension->is_virtual;
-	placeholder_extension->is_abstract = ti->gdextension->is_abstract;
-	placeholder_extension->is_exposed = ti->gdextension->is_exposed;
 	placeholder_extension->is_runtime = true;
 	placeholder_extension->is_placeholder = true;
+
+	if (ti->gdextension) {
+		placeholder_extension->library = ti->gdextension->library;
+		placeholder_extension->parent = ti->gdextension->parent;
+		placeholder_extension->children = ti->gdextension->children;
+		placeholder_extension->parent_class_name = ti->gdextension->parent_class_name;
+		placeholder_extension->class_name = ti->gdextension->class_name;
+		placeholder_extension->editor_class = ti->gdextension->editor_class;
+		placeholder_extension->reloadable = ti->gdextension->reloadable;
+		placeholder_extension->is_virtual = ti->gdextension->is_virtual;
+		placeholder_extension->is_abstract = ti->gdextension->is_abstract;
+		placeholder_extension->is_exposed = ti->gdextension->is_exposed;
+
+		placeholder_extension->tracking_userdata = ti->gdextension->tracking_userdata;
+		placeholder_extension->track_instance = ti->gdextension->track_instance;
+		placeholder_extension->untrack_instance = ti->gdextension->untrack_instance;
+	} else {
+		placeholder_extension->library = nullptr;
+		placeholder_extension->parent = nullptr;
+		placeholder_extension->parent_class_name = ti->inherits;
+		placeholder_extension->class_name = ti->name;
+		placeholder_extension->editor_class = ti->api == API_EDITOR;
+		placeholder_extension->reloadable = false;
+		placeholder_extension->is_virtual = ti->is_virtual;
+		placeholder_extension->is_abstract = false;
+		placeholder_extension->is_exposed = ti->exposed;
+	}
 
 	placeholder_extension->set = &PlaceholderExtensionInstance::placeholder_instance_set;
 	placeholder_extension->get = &PlaceholderExtensionInstance::placeholder_instance_get;
 	placeholder_extension->get_property_list = &PlaceholderExtensionInstance::placeholder_instance_get_property_list;
-	placeholder_extension->free_property_list = &PlaceholderExtensionInstance::placeholder_instance_free_property_list;
+	placeholder_extension->free_property_list2 = &PlaceholderExtensionInstance::placeholder_instance_free_property_list;
 	placeholder_extension->property_can_revert = &PlaceholderExtensionInstance::placeholder_instance_property_can_revert;
 	placeholder_extension->property_get_revert = &PlaceholderExtensionInstance::placeholder_instance_property_get_revert;
 	placeholder_extension->validate_property = &PlaceholderExtensionInstance::placeholder_instance_validate_property;
+#ifndef DISABLE_DEPRECATED
 	placeholder_extension->notification = nullptr;
+	placeholder_extension->free_property_list = nullptr;
+#endif // DISABLE_DEPRECATED
 	placeholder_extension->notification2 = &PlaceholderExtensionInstance::placeholder_instance_notification;
 	placeholder_extension->to_string = &PlaceholderExtensionInstance::placeholder_instance_to_string;
 	placeholder_extension->reference = &PlaceholderExtensionInstance::placeholder_instance_reference;
@@ -585,10 +620,6 @@ ObjectGDExtension *ClassDB::get_placeholder_extension(const StringName &p_class)
 	placeholder_extension->get_virtual_call_data = nullptr;
 	placeholder_extension->call_virtual_with_data = nullptr;
 	placeholder_extension->recreate_instance = &PlaceholderExtensionInstance::placeholder_class_recreate_instance;
-
-	placeholder_extension->tracking_userdata = ti->gdextension->tracking_userdata;
-	placeholder_extension->track_instance = ti->gdextension->track_instance;
-	placeholder_extension->untrack_instance = ti->gdextension->untrack_instance;
 
 	return placeholder_extension;
 }
@@ -612,6 +643,12 @@ void ClassDB::set_object_extension_instance(Object *p_object, const StringName &
 
 	p_object->_extension = ti->gdextension;
 	p_object->_extension_instance = p_instance;
+
+#ifdef TOOLS_ENABLED
+	if (p_object->_extension->track_instance) {
+		p_object->_extension->track_instance(p_object->_extension->tracking_userdata, p_object);
+	}
+#endif
 }
 
 bool ClassDB::can_instantiate(const StringName &p_class) {
@@ -627,7 +664,7 @@ bool ClassDB::can_instantiate(const StringName &p_class) {
 		return scr.is_valid() && scr->is_valid() && !scr->is_abstract();
 	}
 #ifdef TOOLS_ENABLED
-	if (ti->api == API_EDITOR && !Engine::get_singleton()->is_editor_hint()) {
+	if ((ti->api == API_EDITOR || ti->api == API_EDITOR_EXTENSION) && !Engine::get_singleton()->is_editor_hint()) {
 		return false;
 	}
 #endif
@@ -647,7 +684,7 @@ bool ClassDB::is_virtual(const StringName &p_class) {
 		return scr.is_valid() && scr->is_valid() && scr->is_abstract();
 	}
 #ifdef TOOLS_ENABLED
-	if (ti->api == API_EDITOR && !Engine::get_singleton()->is_editor_hint()) {
+	if ((ti->api == API_EDITOR || ti->api == API_EDITOR_EXTENSION) && !Engine::get_singleton()->is_editor_hint()) {
 		return false;
 	}
 #endif
@@ -1516,7 +1553,7 @@ bool ClassDB::get_property(Object *p_object, const StringName &p_property, Varia
 	}
 
 	// The "free()" method is special, so we assume it exists and return a Callable.
-	if (p_property == CoreStringNames::get_singleton()->_free) {
+	if (p_property == CoreStringName(free_)) {
 		r_value = Callable(p_object, p_property);
 		return true;
 	}
@@ -1638,6 +1675,31 @@ bool ClassDB::has_method(const StringName &p_class, const StringName &p_method, 
 	}
 
 	return false;
+}
+
+int ClassDB::get_method_argument_count(const StringName &p_class, const StringName &p_method, bool *r_is_valid, bool p_no_inheritance) {
+	OBJTYPE_RLOCK;
+
+	ClassInfo *type = classes.getptr(p_class);
+
+	while (type) {
+		MethodBind **method = type->method_map.getptr(p_method);
+		if (method && *method) {
+			if (r_is_valid) {
+				*r_is_valid = true;
+			}
+			return (*method)->get_argument_count();
+		}
+		if (p_no_inheritance) {
+			break;
+		}
+		type = type->inherits_ptr;
+	}
+
+	if (r_is_valid) {
+		*r_is_valid = false;
+	}
+	return 0;
 }
 
 void ClassDB::bind_method_custom(const StringName &p_class, MethodBind *p_method) {
@@ -1793,8 +1855,9 @@ void ClassDB::add_virtual_method(const StringName &p_class, const MethodInfo &p_
 		if (p_arg_names.size() != mi.arguments.size()) {
 			WARN_PRINT("Mismatch argument name count for virtual method: " + String(p_class) + "::" + p_method.name);
 		} else {
-			for (int i = 0; i < p_arg_names.size(); i++) {
-				mi.arguments[i].name = p_arg_names[i];
+			List<PropertyInfo>::Iterator itr = mi.arguments.begin();
+			for (int i = 0; i < p_arg_names.size(); ++itr, ++i) {
+				itr->name = p_arg_names[i];
 			}
 		}
 	}
@@ -2028,6 +2091,9 @@ void ClassDB::register_extension_class(ObjectGDExtension *p_extension) {
 		}
 	}
 	c.reloadable = p_extension->reloadable;
+#ifdef TOOLS_ENABLED
+	c.is_runtime = p_extension->is_runtime;
+#endif
 
 	classes[p_extension->class_name] = c;
 }

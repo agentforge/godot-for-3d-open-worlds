@@ -126,7 +126,7 @@ protected:
 	/* ---- General settings for animation ---- */
 	AnimationCallbackModeProcess callback_mode_process = ANIMATION_CALLBACK_MODE_PROCESS_IDLE;
 	AnimationCallbackModeMethod callback_mode_method = ANIMATION_CALLBACK_MODE_METHOD_DEFERRED;
-	AnimationCallbackModeDiscrete callback_mode_discrete = ANIMATION_CALLBACK_MODE_DISCRETE_DOMINANT;
+	AnimationCallbackModeDiscrete callback_mode_discrete = ANIMATION_CALLBACK_MODE_DISCRETE_RECESSIVE;
 	int audio_max_polyphony = 32;
 	NodePath root_node;
 
@@ -222,8 +222,14 @@ protected:
 		Variant init_value;
 		Variant value;
 		Vector<StringName> subpath;
+
+		// TODO: There are many boolean, can be packed into one integer.
+		bool is_init = false;
+		bool use_continuous = false;
 		bool use_discrete = false;
 		bool is_using_angle = false;
+		bool is_variant_interpolatable = true;
+
 		Variant element_size;
 
 		TrackCacheValue(const TrackCacheValue &p_other) :
@@ -231,8 +237,11 @@ protected:
 				init_value(p_other.init_value),
 				value(p_other.value),
 				subpath(p_other.subpath),
+				is_init(p_other.is_init),
+				use_continuous(p_other.use_continuous),
 				use_discrete(p_other.use_discrete),
 				is_using_angle(p_other.is_using_angle),
+				is_variant_interpolatable(p_other.is_variant_interpolatable),
 				element_size(p_other.element_size) {}
 
 		TrackCacheValue() { type = Animation::TYPE_VALUE; }
@@ -324,7 +333,10 @@ protected:
 	void _get_property_list(List<PropertyInfo> *p_list) const;
 	void _notification(int p_what);
 	virtual void _validate_property(PropertyInfo &p_property) const;
+
+#ifdef TOOLS_ENABLED
 	virtual void get_argument_options(const StringName &p_function, int p_idx, List<String> *r_options) const override;
+#endif
 
 	static void _bind_methods();
 	void _node_removed(Node *p_node);
@@ -336,6 +348,8 @@ protected:
 
 	/* ---- Blending processor ---- */
 	virtual void _process_animation(double p_delta, bool p_update_only = false);
+
+	// For post process with retrieved key value during blending.
 	virtual Variant _post_process_key_value(const Ref<Animation> &p_anim, int p_track, Variant p_value, ObjectID p_object_id, int p_object_sub_idx = -1);
 	Variant post_process_key_value(const Ref<Animation> &p_anim, int p_track, Variant p_value, ObjectID p_object_id, int p_object_sub_idx = -1);
 	GDVIRTUAL5RC(Variant, _post_process_key_value, Ref<Animation>, int, Variant, ObjectID, int);
@@ -372,7 +386,6 @@ protected:
 
 #ifndef DISABLE_DEPRECATED
 	virtual Variant _post_process_key_value_bind_compat_86687(const Ref<Animation> &p_anim, int p_track, Variant p_value, Object *p_object, int p_object_idx = -1);
-
 	static void _bind_compatibility_methods();
 #endif // DISABLE_DEPRECATED
 
@@ -431,7 +444,7 @@ public:
 	void make_animation_instance(const StringName &p_name, const PlaybackInfo p_playback_info);
 	void clear_animation_instances();
 	virtual void advance(double p_time);
-	virtual void clear_caches(); ///< must be called by hand if an animation was modified after added
+	virtual void clear_caches(); // Must be called by hand if an animation was modified after added.
 
 	/* ---- Capture feature ---- */
 	void capture(const StringName &p_name, double p_duration, Tween::TransitionType p_trans_type = Tween::TRANS_LINEAR, Tween::EaseType p_ease_type = Tween::EASE_IN);

@@ -58,15 +58,21 @@ DisplayServerAndroid *DisplayServerAndroid::get_singleton() {
 
 bool DisplayServerAndroid::has_feature(Feature p_feature) const {
 	switch (p_feature) {
+#ifndef DISABLE_DEPRECATED
+		case FEATURE_GLOBAL_MENU: {
+			return (native_menu && native_menu->has_feature(NativeMenu::FEATURE_GLOBAL_MENU));
+		} break;
+#endif
 		case FEATURE_CURSOR_SHAPE:
 		//case FEATURE_CUSTOM_CURSOR_SHAPE:
-		//case FEATURE_GLOBAL_MENU:
 		//case FEATURE_HIDPI:
 		//case FEATURE_ICON:
 		//case FEATURE_IME:
 		case FEATURE_MOUSE:
 		//case FEATURE_MOUSE_WARP:
 		//case FEATURE_NATIVE_DIALOG:
+		//case FEATURE_NATIVE_DIALOG_INPUT:
+		//case FEATURE_NATIVE_DIALOG_FILE:
 		//case FEATURE_NATIVE_ICON:
 		//case FEATURE_WINDOW_TRANSPARENCY:
 		case FEATURE_CLIPBOARD:
@@ -320,7 +326,7 @@ void DisplayServerAndroid::window_set_drop_files_callback(const Callable &p_call
 }
 
 void DisplayServerAndroid::_window_callback(const Callable &p_callable, const Variant &p_arg, bool p_deferred) const {
-	if (!p_callable.is_null()) {
+	if (p_callable.is_valid()) {
 		if (p_deferred) {
 			p_callable.call_deferred(p_arg);
 		} else {
@@ -505,8 +511,8 @@ Vector<String> DisplayServerAndroid::get_rendering_drivers_func() {
 	return drivers;
 }
 
-DisplayServer *DisplayServerAndroid::create_func(const String &p_rendering_driver, DisplayServer::WindowMode p_mode, DisplayServer::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Error &r_error) {
-	DisplayServer *ds = memnew(DisplayServerAndroid(p_rendering_driver, p_mode, p_vsync_mode, p_flags, p_position, p_resolution, p_screen, r_error));
+DisplayServer *DisplayServerAndroid::create_func(const String &p_rendering_driver, DisplayServer::WindowMode p_mode, DisplayServer::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Context p_context, Error &r_error) {
+	DisplayServer *ds = memnew(DisplayServerAndroid(p_rendering_driver, p_mode, p_vsync_mode, p_flags, p_position, p_resolution, p_screen, p_context, r_error));
 	if (r_error != OK) {
 		if (p_rendering_driver == "vulkan") {
 			OS::get_singleton()->alert(
@@ -573,10 +579,12 @@ void DisplayServerAndroid::notify_surface_changed(int p_width, int p_height) {
 	}
 }
 
-DisplayServerAndroid::DisplayServerAndroid(const String &p_rendering_driver, DisplayServer::WindowMode p_mode, DisplayServer::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Error &r_error) {
+DisplayServerAndroid::DisplayServerAndroid(const String &p_rendering_driver, DisplayServer::WindowMode p_mode, DisplayServer::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Context p_context, Error &r_error) {
 	rendering_driver = p_rendering_driver;
 
 	keep_screen_on = GLOBAL_GET("display/window/energy_saving/keep_screen_on");
+
+	native_menu = memnew(NativeMenu);
 
 #if defined(GLES3_ENABLED)
 	if (rendering_driver == "opengl3") {
@@ -641,6 +649,11 @@ DisplayServerAndroid::DisplayServerAndroid(const String &p_rendering_driver, Dis
 }
 
 DisplayServerAndroid::~DisplayServerAndroid() {
+	if (native_menu) {
+		memdelete(native_menu);
+		native_menu = nullptr;
+	}
+
 #if defined(RD_ENABLED)
 	if (rendering_device) {
 		memdelete(rendering_device);

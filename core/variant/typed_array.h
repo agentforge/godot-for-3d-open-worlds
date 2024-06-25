@@ -38,7 +38,7 @@
 #include "core/variant/type_info.h"
 #include "core/variant/variant.h"
 
-template <class T>
+template <typename T>
 class TypedArray : public Array {
 public:
 	_FORCE_INLINE_ void operator=(const Array &p_array) {
@@ -56,12 +56,12 @@ public:
 	}
 };
 
-template <class T>
+template <typename T>
 struct VariantInternalAccessor<TypedArray<T>> {
 	static _FORCE_INLINE_ TypedArray<T> get(const Variant *v) { return *VariantInternal::get_array(v); }
 	static _FORCE_INLINE_ void set(Variant *v, const TypedArray<T> &p_array) { *VariantInternal::get_array(v) = p_array; }
 };
-template <class T>
+template <typename T>
 struct VariantInternalAccessor<const TypedArray<T> &> {
 	static _FORCE_INLINE_ TypedArray<T> get(const Variant *v) { return *VariantInternal::get_array(v); }
 	static _FORCE_INLINE_ void set(Variant *v, const TypedArray<T> &p_array) { *VariantInternal::get_array(v) = p_array; }
@@ -134,9 +134,10 @@ MAKE_TYPED_ARRAY(PackedStringArray, Variant::PACKED_STRING_ARRAY)
 MAKE_TYPED_ARRAY(PackedVector2Array, Variant::PACKED_VECTOR2_ARRAY)
 MAKE_TYPED_ARRAY(PackedVector3Array, Variant::PACKED_VECTOR3_ARRAY)
 MAKE_TYPED_ARRAY(PackedColorArray, Variant::PACKED_COLOR_ARRAY)
+MAKE_TYPED_ARRAY(PackedVector4Array, Variant::PACKED_VECTOR4_ARRAY)
 MAKE_TYPED_ARRAY(IPAddress, Variant::STRING)
 
-template <class T>
+template <typename T>
 struct PtrToArg<TypedArray<T>> {
 	_FORCE_INLINE_ static TypedArray<T> convert(const void *p_ptr) {
 		return TypedArray<T>(*reinterpret_cast<const Array *>(p_ptr));
@@ -147,7 +148,7 @@ struct PtrToArg<TypedArray<T>> {
 	}
 };
 
-template <class T>
+template <typename T>
 struct PtrToArg<const TypedArray<T> &> {
 	typedef Array EncodeT;
 	_FORCE_INLINE_ static TypedArray<T> convert(const void *p_ptr) {
@@ -155,7 +156,7 @@ struct PtrToArg<const TypedArray<T> &> {
 	}
 };
 
-template <class T>
+template <typename T>
 struct GetTypeInfo<TypedArray<T>> {
 	static const Variant::Type VARIANT_TYPE = Variant::ARRAY;
 	static const GodotTypeInfo::Metadata METADATA = GodotTypeInfo::METADATA_NONE;
@@ -164,7 +165,7 @@ struct GetTypeInfo<TypedArray<T>> {
 	}
 };
 
-template <class T>
+template <typename T>
 struct GetTypeInfo<const TypedArray<T> &> {
 	static const Variant::Type VARIANT_TYPE = Variant::ARRAY;
 	static const GodotTypeInfo::Metadata METADATA = GodotTypeInfo::METADATA_NONE;
@@ -235,6 +236,7 @@ MAKE_TYPED_ARRAY_INFO(PackedStringArray, Variant::PACKED_STRING_ARRAY)
 MAKE_TYPED_ARRAY_INFO(PackedVector2Array, Variant::PACKED_VECTOR2_ARRAY)
 MAKE_TYPED_ARRAY_INFO(PackedVector3Array, Variant::PACKED_VECTOR3_ARRAY)
 MAKE_TYPED_ARRAY_INFO(PackedColorArray, Variant::PACKED_COLOR_ARRAY)
+MAKE_TYPED_ARRAY_INFO(PackedVector4Array, Variant::PACKED_VECTOR4_ARRAY)
 MAKE_TYPED_ARRAY_INFO(IPAddress, Variant::STRING)
 
 #undef MAKE_TYPED_ARRAY

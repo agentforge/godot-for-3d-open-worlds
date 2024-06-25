@@ -376,6 +376,7 @@ public:
 	Error compress_from_channels(CompressMode p_mode, UsedChannels p_channels, ASTCFormat p_astc_format = ASTC_FORMAT_4x4);
 	Error decompress();
 	bool is_compressed() const;
+	static bool is_format_compressed(Format p_format);
 
 	void fix_alpha_edges();
 	void premultiply_alpha();
@@ -428,7 +429,7 @@ public:
 
 	const uint8_t *ptr() const;
 	uint8_t *ptrw();
-	int64_t data_size() const;
+	int64_t get_data_size() const;
 
 	void adjust_bcs(float p_brightness, float p_contrast, float p_saturation);
 

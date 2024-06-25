@@ -43,6 +43,9 @@
 #else
 #include <wayland-client-core.h>
 #include <wayland-cursor.h>
+#ifdef GLES3_ENABLED
+#include <wayland-egl.h>
+#endif
 #include <xkbcommon/xkbcommon.h>
 #endif // SOWRAP_ENABLED
 
@@ -133,8 +136,8 @@ public:
 		struct xdg_wm_base *xdg_wm_base = nullptr;
 		uint32_t xdg_wm_base_name = 0;
 
-		struct zxdg_exporter_v1 *wl_exporter = nullptr;
-		uint32_t wl_exporter_name = 0;
+		struct zxdg_exporter_v1 *xdg_exporter = nullptr;
+		uint32_t xdg_exporter_name = 0;
 
 		// wayland-protocols globals.
 
@@ -300,15 +303,15 @@ public:
 		// The amount "scrolled" in pixels, in each direction.
 		Vector2 scroll_vector;
 
-		// The amount of scroll "clicks" in each direction.
-		Vector2i discrete_scroll_vector;
+		// The amount of scroll "clicks" in each direction, in fractions of 120.
+		Vector2i discrete_scroll_vector_120;
 
 		uint32_t pinch_scale = 1;
 	};
 
 	struct TabletToolData {
 		Point2i position;
-		Vector2i tilt;
+		Vector2 tilt;
 		uint32_t pressure = 0;
 
 		BitField<MouseButtonMask> pressed_button_mask;
@@ -322,10 +325,20 @@ public:
 		// be used as a mouse...), but we'll hack one in with the current ticks.
 		uint64_t button_time = 0;
 
+		uint64_t motion_time = 0;
+
+		uint32_t proximity_serial = 0;
+		struct wl_surface *proximal_surface = nullptr;
+	};
+
+	struct TabletToolState {
+		struct wl_seat *wl_seat = nullptr;
+
+		struct wl_surface *last_surface = nullptr;
 		bool is_eraser = false;
 
-		bool in_proximity = false;
-		bool touching = false;
+		TabletToolData data_pending;
+		TabletToolData data;
 	};
 
 	struct OfferState {
@@ -425,9 +438,6 @@ public:
 		struct zwp_tablet_seat_v2 *wp_tablet_seat = nullptr;
 
 		List<struct zwp_tablet_tool_v2 *> tablet_tools;
-
-		TabletToolData tablet_tool_data_buffer;
-		TabletToolData tablet_tool_data;
 	};
 
 	struct CustomCursor {
@@ -572,41 +582,41 @@ private:
 
 	static void _wp_relative_pointer_on_relative_motion(void *data, struct zwp_relative_pointer_v1 *wp_relative_pointer_v1, uint32_t uptime_hi, uint32_t uptime_lo, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t dx_unaccel, wl_fixed_t dy_unaccel);
 
-	static void _wp_pointer_gesture_pinch_on_begin(void *data, struct zwp_pointer_gesture_pinch_v1 *zwp_pointer_gesture_pinch_v1, uint32_t serial, uint32_t time, struct wl_surface *surface, uint32_t fingers);
-	static void _wp_pointer_gesture_pinch_on_update(void *data, struct zwp_pointer_gesture_pinch_v1 *zwp_pointer_gesture_pinch_v1, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation);
-	static void _wp_pointer_gesture_pinch_on_end(void *data, struct zwp_pointer_gesture_pinch_v1 *zwp_pointer_gesture_pinch_v1, uint32_t serial, uint32_t time, int32_t cancelled);
+	static void _wp_pointer_gesture_pinch_on_begin(void *data, struct zwp_pointer_gesture_pinch_v1 *wp_pointer_gesture_pinch_v1, uint32_t serial, uint32_t time, struct wl_surface *surface, uint32_t fingers);
+	static void _wp_pointer_gesture_pinch_on_update(void *data, struct zwp_pointer_gesture_pinch_v1 *wp_pointer_gesture_pinch_v1, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation);
+	static void _wp_pointer_gesture_pinch_on_end(void *data, struct zwp_pointer_gesture_pinch_v1 *zp_pointer_gesture_pinch_v1, uint32_t serial, uint32_t time, int32_t cancelled);
 
 	static void _wp_primary_selection_device_on_data_offer(void *data, struct zwp_primary_selection_device_v1 *wp_primary_selection_device_v1, struct zwp_primary_selection_offer_v1 *offer);
 	static void _wp_primary_selection_device_on_selection(void *data, struct zwp_primary_selection_device_v1 *wp_primary_selection_device_v1, struct zwp_primary_selection_offer_v1 *id);
 
-	static void _wp_primary_selection_offer_on_offer(void *data, struct zwp_primary_selection_offer_v1 *zwp_primary_selection_offer_v1, const char *mime_type);
+	static void _wp_primary_selection_offer_on_offer(void *data, struct zwp_primary_selection_offer_v1 *wp_primary_selection_offer_v1, const char *mime_type);
 
 	static void _wp_primary_selection_source_on_send(void *data, struct zwp_primary_selection_source_v1 *wp_primary_selection_source_v1, const char *mime_type, int32_t fd);
 	static void _wp_primary_selection_source_on_cancelled(void *data, struct zwp_primary_selection_source_v1 *wp_primary_selection_source_v1);
 
-	static void _wp_tablet_seat_on_tablet_added(void *data, struct zwp_tablet_seat_v2 *zwp_tablet_seat_v2, struct zwp_tablet_v2 *id);
-	static void _wp_tablet_seat_on_tool_added(void *data, struct zwp_tablet_seat_v2 *zwp_tablet_seat_v2, struct zwp_tablet_tool_v2 *id);
-	static void _wp_tablet_seat_on_pad_added(void *data, struct zwp_tablet_seat_v2 *zwp_tablet_seat_v2, struct zwp_tablet_pad_v2 *id);
+	static void _wp_tablet_seat_on_tablet_added(void *data, struct zwp_tablet_seat_v2 *wp_tablet_seat_v2, struct zwp_tablet_v2 *id);
+	static void _wp_tablet_seat_on_tool_added(void *data, struct zwp_tablet_seat_v2 *wp_tablet_seat_v2, struct zwp_tablet_tool_v2 *id);
+	static void _wp_tablet_seat_on_pad_added(void *data, struct zwp_tablet_seat_v2 *wp_tablet_seat_v2, struct zwp_tablet_pad_v2 *id);
 
-	static void _wp_tablet_tool_on_type(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, uint32_t tool_type);
-	static void _wp_tablet_tool_on_hardware_serial(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, uint32_t hardware_serial_hi, uint32_t hardware_serial_lo);
-	static void _wp_tablet_tool_on_hardware_id_wacom(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, uint32_t hardware_id_hi, uint32_t hardware_id_lo);
-	static void _wp_tablet_tool_on_capability(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, uint32_t capability);
-	static void _wp_tablet_tool_on_done(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2);
-	static void _wp_tablet_tool_on_removed(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2);
-	static void _wp_tablet_tool_on_proximity_in(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, uint32_t serial, struct zwp_tablet_v2 *tablet, struct wl_surface *surface);
-	static void _wp_tablet_tool_on_proximity_out(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2);
-	static void _wp_tablet_tool_on_down(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, uint32_t serial);
-	static void _wp_tablet_tool_on_up(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2);
-	static void _wp_tablet_tool_on_motion(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, wl_fixed_t x, wl_fixed_t y);
-	static void _wp_tablet_tool_on_pressure(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, uint32_t pressure);
-	static void _wp_tablet_tool_on_distance(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, uint32_t distance);
-	static void _wp_tablet_tool_on_tilt(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, wl_fixed_t tilt_x, wl_fixed_t tilt_y);
-	static void _wp_tablet_tool_on_rotation(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, wl_fixed_t degrees);
-	static void _wp_tablet_tool_on_slider(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, int32_t position);
-	static void _wp_tablet_tool_on_wheel(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, wl_fixed_t degrees, int32_t clicks);
-	static void _wp_tablet_tool_on_button(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, uint32_t serial, uint32_t button, uint32_t state);
-	static void _wp_tablet_tool_on_frame(void *data, struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2, uint32_t time);
+	static void _wp_tablet_tool_on_type(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, uint32_t tool_type);
+	static void _wp_tablet_tool_on_hardware_serial(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, uint32_t hardware_serial_hi, uint32_t hardware_serial_lo);
+	static void _wp_tablet_tool_on_hardware_id_wacom(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, uint32_t hardware_id_hi, uint32_t hardware_id_lo);
+	static void _wp_tablet_tool_on_capability(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, uint32_t capability);
+	static void _wp_tablet_tool_on_done(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2);
+	static void _wp_tablet_tool_on_removed(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2);
+	static void _wp_tablet_tool_on_proximity_in(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, uint32_t serial, struct zwp_tablet_v2 *tablet, struct wl_surface *surface);
+	static void _wp_tablet_tool_on_proximity_out(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2);
+	static void _wp_tablet_tool_on_down(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, uint32_t serial);
+	static void _wp_tablet_tool_on_up(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2);
+	static void _wp_tablet_tool_on_motion(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, wl_fixed_t x, wl_fixed_t y);
+	static void _wp_tablet_tool_on_pressure(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, uint32_t pressure);
+	static void _wp_tablet_tool_on_distance(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, uint32_t distance);
+	static void _wp_tablet_tool_on_tilt(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, wl_fixed_t tilt_x, wl_fixed_t tilt_y);
+	static void _wp_tablet_tool_on_rotation(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, wl_fixed_t degrees);
+	static void _wp_tablet_tool_on_slider(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, int32_t position);
+	static void _wp_tablet_tool_on_wheel(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, wl_fixed_t degrees, int32_t clicks);
+	static void _wp_tablet_tool_on_button(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, uint32_t serial, uint32_t button, uint32_t state);
+	static void _wp_tablet_tool_on_frame(void *data, struct zwp_tablet_tool_v2 *wp_tablet_tool_v2, uint32_t time);
 
 	static void _xdg_toplevel_decoration_on_configure(void *data, struct zxdg_toplevel_decoration_v1 *xdg_toplevel_decoration, uint32_t mode);
 
@@ -855,6 +865,7 @@ public:
 	static WindowState *wl_surface_get_window_state(struct wl_surface *p_surface);
 	static ScreenState *wl_output_get_screen_state(struct wl_output *p_output);
 	static SeatState *wl_seat_get_seat_state(struct wl_seat *p_seat);
+	static TabletToolState *wp_tablet_tool_get_state(struct zwp_tablet_tool_v2 *p_tool);
 	static OfferState *wl_data_offer_get_offer_state(struct wl_data_offer *p_offer);
 
 	static OfferState *wp_primary_selection_offer_get_offer_state(struct zwp_primary_selection_offer_v1 *p_offer);

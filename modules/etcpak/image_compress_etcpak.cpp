@@ -92,7 +92,7 @@ void _compress_etcpak(EtcpakType p_compresstype, Image *r_img) {
 	uint64_t start_time = OS::get_singleton()->get_ticks_msec();
 
 	Image::Format img_format = r_img->get_format();
-	if (img_format >= Image::FORMAT_DXT1) {
+	if (Image::is_format_compressed(img_format)) {
 		return; // Do not compress, already compressed.
 	}
 	if (img_format > Image::FORMAT_RGBA8) {
@@ -278,5 +278,5 @@ void _compress_etcpak(EtcpakType p_compresstype, Image *r_img) {
 	// Replace original image with compressed one.
 	r_img->set_data(width, height, mipmaps, target_format, dest_data);
 
-	print_verbose(vformat("etcpak: Encoding took %s ms.", rtos(OS::get_singleton()->get_ticks_msec() - start_time)));
+	print_verbose(vformat("etcpak: Encoding took %d ms.", OS::get_singleton()->get_ticks_msec() - start_time));
 }

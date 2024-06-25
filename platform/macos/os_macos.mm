@@ -70,7 +70,7 @@ void OS_MacOS::initialize() {
 String OS_MacOS::get_processor_name() const {
 	char buffer[256];
 	size_t buffer_len = 256;
-	if (sysctlbyname("machdep.cpu.brand_string", &buffer, &buffer_len, NULL, 0) == 0) {
+	if (sysctlbyname("machdep.cpu.brand_string", &buffer, &buffer_len, nullptr, 0) == 0) {
 		return String::utf8(buffer, buffer_len);
 	}
 	ERR_FAIL_V_MSG("", String("Couldn't get the CPU model name. Returning an empty string."));
@@ -217,7 +217,7 @@ _FORCE_INLINE_ String OS_MacOS::get_framework_executable(const String &p_path) {
 	return p_path;
 }
 
-Error OS_MacOS::open_dynamic_library(const String &p_path, void *&p_library_handle, bool p_also_set_library_path, String *r_resolved_path) {
+Error OS_MacOS::open_dynamic_library(const String &p_path, void *&p_library_handle, GDExtensionData *p_data) {
 	String path = get_framework_executable(p_path);
 
 	if (!FileAccess::exists(path)) {
@@ -235,8 +235,8 @@ Error OS_MacOS::open_dynamic_library(const String &p_path, void *&p_library_hand
 	p_library_handle = dlopen(path.utf8().get_data(), RTLD_NOW);
 	ERR_FAIL_NULL_V_MSG(p_library_handle, ERR_CANT_OPEN, vformat("Can't open dynamic library: %s. Error: %s.", p_path, dlerror()));
 
-	if (r_resolved_path != nullptr) {
-		*r_resolved_path = path;
+	if (p_data != nullptr && p_data->r_resolved_path != nullptr) {
+		*p_data->r_resolved_path = path;
 	}
 
 	return OK;
@@ -601,7 +601,9 @@ Error OS_MacOS::create_process(const String &p_path, const List<String> &p_argum
 		for (const String &arg : p_arguments) {
 			[arguments addObject:[NSString stringWithUTF8String:arg.utf8().get_data()]];
 		}
+#if defined(__x86_64__)
 		if (@available(macOS 10.15, *)) {
+#endif
 			NSWorkspaceOpenConfiguration *configuration = [[NSWorkspaceOpenConfiguration alloc] init];
 			[configuration setArguments:arguments];
 			[configuration setCreatesNewApplicationInstance:YES];
@@ -630,6 +632,7 @@ Error OS_MacOS::create_process(const String &p_path, const List<String> &p_argum
 			}
 
 			return err;
+#if defined(__x86_64__)
 		} else {
 			Error err = ERR_TIMEOUT;
 			NSError *error = nullptr;
@@ -645,6 +648,7 @@ Error OS_MacOS::create_process(const String &p_path, const List<String> &p_argum
 			}
 			return err;
 		}
+#endif
 	} else {
 		return OS_Unix::create_process(p_path, p_arguments, r_child_id, p_open_console);
 	}

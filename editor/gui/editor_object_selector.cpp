@@ -35,6 +35,7 @@
 #include "editor/editor_string_names.h"
 #include "editor/multi_node_edit.h"
 #include "editor/themes/editor_scale.h"
+#include "scene/gui/margin_container.h"
 
 Size2 EditorObjectSelector::get_minimum_size() const {
 	Ref<Font> font = get_theme_font(SNAME("font"));
@@ -210,7 +211,7 @@ void EditorObjectSelector::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_READY: {
-			connect("pressed", callable_mp(this, &EditorObjectSelector::_show_popup));
+			connect(SceneStringName(pressed), callable_mp(this, &EditorObjectSelector::_show_popup));
 		} break;
 	}
 }
@@ -238,6 +239,7 @@ EditorObjectSelector::EditorObjectSelector(EditorSelectionHistory *p_history) {
 	current_object_label = memnew(Label);
 	current_object_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	current_object_label->set_h_size_flags(SIZE_EXPAND_FILL);
+	current_object_label->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
 	current_object_label->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
 	main_hb->add_child(current_object_label);
 
@@ -250,7 +252,7 @@ EditorObjectSelector::EditorObjectSelector(EditorSelectionHistory *p_history) {
 	sub_objects_menu->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
 	add_child(sub_objects_menu);
 	sub_objects_menu->connect("about_to_popup", callable_mp(this, &EditorObjectSelector::_about_to_show));
-	sub_objects_menu->connect("id_pressed", callable_mp(this, &EditorObjectSelector::_id_pressed));
+	sub_objects_menu->connect(SceneStringName(id_pressed), callable_mp(this, &EditorObjectSelector::_id_pressed));
 
 	set_tooltip_text(TTR("Open a list of sub-resources."));
 }

@@ -31,10 +31,11 @@
 #ifndef EDITOR_NODE_H
 #define EDITOR_NODE_H
 
+#include "core/object/script_language.h"
 #include "core/templates/safe_refcount.h"
 #include "editor/editor_data.h"
 #include "editor/editor_folding.h"
-#include "editor/editor_plugin.h"
+#include "editor/plugins/editor_plugin.h"
 
 typedef void (*EditorNodeInitCallback)();
 typedef void (*EditorPluginInitializeCallback)();
@@ -77,6 +78,7 @@ class DockSplitContainer;
 class DynamicFontImportSettingsDialog;
 class EditorAbout;
 class EditorBuildProfileManager;
+class EditorBottomPanel;
 class EditorCommandPalette;
 class EditorDockManager;
 class EditorExport;
@@ -134,7 +136,19 @@ public:
 	enum SceneNameCasing {
 		SCENE_NAME_CASING_AUTO,
 		SCENE_NAME_CASING_PASCAL_CASE,
-		SCENE_NAME_CASING_SNAKE_CASE
+		SCENE_NAME_CASING_SNAKE_CASE,
+		SCENE_NAME_CASING_KEBAB_CASE,
+	};
+
+	enum ActionOnPlay {
+		ACTION_ON_PLAY_DO_NOTHING,
+		ACTION_ON_PLAY_OPEN_OUTPUT,
+		ACTION_ON_PLAY_OPEN_DEBUGGER,
+	};
+
+	enum ActionOnStop {
+		ACTION_ON_STOP_DO_NOTHING,
+		ACTION_ON_STOP_CLOSE_BUTTOM_PANEL,
 	};
 
 	struct ExecuteThreadArgs {
@@ -156,6 +170,7 @@ private:
 		FILE_NEW_INHERITED_SCENE,
 		FILE_OPEN_SCENE,
 		FILE_SAVE_SCENE,
+		FILE_SAVE_SCENE_SILENTLY,
 		FILE_SAVE_AS_SCENE,
 		FILE_SAVE_ALL_SCENES,
 		FILE_SAVE_AND_RUN,
@@ -223,7 +238,7 @@ private:
 		HELP_SEARCH,
 		HELP_COMMAND_PALETTE,
 		HELP_DOCS,
-		HELP_QA,
+		HELP_FORUM,
 		HELP_REPORT_A_BUG,
 		HELP_COPY_SYSTEM_INFO,
 		HELP_SUGGEST_A_FEATURE,
@@ -242,12 +257,6 @@ private:
 	enum {
 		MAX_INIT_CALLBACKS = 128,
 		MAX_BUILD_CALLBACKS = 128
-	};
-
-	struct BottomPanelItem {
-		String name;
-		Control *control = nullptr;
-		Button *button = nullptr;
 	};
 
 	struct ExportDefer {
@@ -324,7 +333,6 @@ private:
 	DisplayServer::WindowMode prev_mode = DisplayServer::WINDOW_MODE_MAXIMIZED;
 	int old_split_ofs = 0;
 	VSplitContainer *top_split = nullptr;
-	HBoxContainer *bottom_hb = nullptr;
 	Control *vp_base = nullptr;
 
 	Label *project_title = nullptr;
@@ -357,6 +365,13 @@ private:
 	AcceptDialog *execute_output_dialog = nullptr;
 
 	Ref<Theme> theme;
+
+	Timer *system_theme_timer = nullptr;
+	bool follow_system_theme = false;
+	bool use_system_accent_color = false;
+	bool last_dark_mode_state = false;
+	Color last_system_base_color = Color(0, 0, 0, 0);
+	Color last_system_accent_color = Color(0, 0, 0, 0);
 
 	PopupMenu *recent_scenes = nullptr;
 	String _recent_scene;
@@ -396,8 +411,6 @@ private:
 	EditorFileDialog *file_export_lib = nullptr;
 	EditorFileDialog *file_script = nullptr;
 	EditorFileDialog *file_android_build_source = nullptr;
-	CheckBox *file_export_lib_merge = nullptr;
-	CheckBox *file_export_lib_apply_xforms = nullptr;
 	String current_path;
 	MenuButton *update_spinner = nullptr;
 
@@ -419,17 +432,10 @@ private:
 
 	EditorDockManager *editor_dock_manager = nullptr;
 	Timer *editor_layout_save_delay_timer = nullptr;
+	Timer *scan_changes_timer = nullptr;
 	Button *distraction_free = nullptr;
 
-	Vector<BottomPanelItem> bottom_panel_items;
-	PanelContainer *bottom_panel = nullptr;
-	HBoxContainer *bottom_panel_hb = nullptr;
-	HBoxContainer *bottom_panel_hb_editors = nullptr;
-	VBoxContainer *bottom_panel_vb = nullptr;
-	EditorToaster *editor_toaster = nullptr;
-	LinkButton *version_btn = nullptr;
-	Button *bottom_panel_raise = nullptr;
-	bool bottom_panel_updating = false;
+	EditorBottomPanel *bottom_panel = nullptr;
 
 	Tree *disk_changed_list = nullptr;
 	ConfirmationDialog *disk_changed = nullptr;
@@ -538,6 +544,8 @@ private:
 	void _screenshot(bool p_use_utc = false);
 	void _save_screenshot(NodePath p_path);
 
+	void _check_system_theme_changed();
+
 	void _tool_menu_option(int p_idx);
 	void _export_as_menu_option(int p_idx);
 	void _update_file_menu_opened();
@@ -562,7 +570,6 @@ private:
 	void _show_messages();
 	void _vp_resized();
 	void _titlebar_resized();
-	void _version_button_pressed();
 
 	void _update_undo_redo_allowed();
 
@@ -576,6 +583,7 @@ private:
 	int _next_unsaved_scene(bool p_valid_filename, int p_start = 0);
 	void _discard_changes(const String &p_str = String());
 	void _scene_tab_closed(int p_tab);
+	void _cancel_close_scene_tab();
 
 	void _inherit_request(String p_file);
 	void _instantiate_request(const Vector<String> &p_files);
@@ -663,14 +671,9 @@ private:
 	void _immediate_dialog_confirmed();
 	void _select_default_main_screen_plugin();
 
-	void _bottom_panel_switch_by_control(bool p_enable, Control *p_control);
-	void _bottom_panel_switch(bool p_enable, int p_idx);
-	void _bottom_panel_raise_toggled(bool);
-	bool _bottom_panel_drag_hover(const Vector2 &, const Variant &, Button *p_button, Control *p_control);
-
 	void _begin_first_scan();
 
-	void _notify_scene_updated(Node *p_node);
+	void _notify_nodes_scene_reimported(Node *p_node, Array p_reimported_nodes);
 
 protected:
 	friend class FileSystemDock;
@@ -698,8 +701,10 @@ public:
 
 	static EditorTitleBar *get_title_bar() { return singleton->title_bar; }
 	static VSplitContainer *get_top_split() { return singleton->top_split; }
+	static EditorBottomPanel *get_bottom_panel() { return singleton->bottom_panel; }
 
-	static String adjust_scene_name_casing(const String &root_name);
+	static String adjust_scene_name_casing(const String &p_root_name);
+	static String adjust_script_name_casing(const String &p_file_name, ScriptLanguage::ScriptNameCasing p_auto_casing);
 
 	static bool has_unsaved_changes() { return singleton->unsaved_cache; }
 	static void disambiguate_filenames(const Vector<String> p_full_paths, Vector<String> &r_filenames);
@@ -778,6 +783,7 @@ public:
 	SubViewport *get_scene_root() { return scene_root; } // Root of the scene being edited.
 
 	void set_edited_scene(Node *p_scene);
+	void set_edited_scene_root(Node *p_scene, bool p_auto_add);
 	Node *get_edited_scene() { return editor_data.get_edited_scene_root(); }
 
 	void fix_dependencies(const String &p_for_file);
@@ -785,7 +791,7 @@ public:
 	Error load_scene(const String &p_scene, bool p_ignore_broken_deps = false, bool p_set_inherited = false, bool p_clear_errors = true, bool p_force_open_imported = false, bool p_silent_change_tab = false);
 	Error load_resource(const String &p_resource, bool p_ignore_broken_deps = false);
 
-	HashMap<StringName, Variant> get_modified_properties_for_node(Node *p_node);
+	HashMap<StringName, Variant> get_modified_properties_for_node(Node *p_node, bool p_node_references_only);
 
 	struct AdditiveNodeEntry {
 		Node *node = nullptr;
@@ -812,10 +818,17 @@ public:
 	};
 
 	void update_ownership_table_for_addition_node_ancestors(Node *p_current_node, HashMap<Node *, Node *> &p_ownership_table);
+	void update_node_from_node_modification_entry(Node *p_node, ModificationNodeEntry &p_node_modification);
 
-	void update_diff_data_for_node(
-			Node *p_edited_scene,
+	void update_node_reference_modification_table_for_node(
 			Node *p_root,
+			Node *p_node,
+			List<Node *> p_excluded_nodes,
+			HashMap<NodePath, ModificationNodeEntry> &p_modification_table);
+
+	void update_reimported_diff_data_for_node(
+			Node *p_edited_scene,
+			Node *p_reimported_root,
 			Node *p_node,
 			HashMap<NodePath, ModificationNodeEntry> &p_modification_table,
 			List<AdditiveNodeEntry> &p_addition_list);
@@ -878,14 +891,8 @@ public:
 
 	bool is_exiting() const { return exiting; }
 
-	Button *add_bottom_panel_item(String p_text, Control *p_item, bool p_at_front = false);
-	void make_bottom_panel_item_visible(Control *p_item);
-	void raise_bottom_panel_item(Control *p_item);
-	void hide_bottom_panel();
-	void remove_bottom_panel_item(Control *p_item);
-
-	Variant drag_resource(const Ref<Resource> &p_res, Control *p_from);
-	Variant drag_files_and_dirs(const Vector<String> &p_paths, Control *p_from);
+	Dictionary drag_resource(const Ref<Resource> &p_res, Control *p_from);
+	Dictionary drag_files_and_dirs(const Vector<String> &p_paths, Control *p_from);
 
 	void add_tool_menu_item(const String &p_name, const Callable &p_callback);
 	void add_tool_submenu_item(const String &p_name, PopupMenu *p_submenu);

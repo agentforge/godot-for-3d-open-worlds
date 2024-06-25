@@ -68,14 +68,6 @@ class EditorFileSystemDirectory : public Object {
 		String script_class_icon_path;
 	};
 
-	struct FileInfoSort {
-		bool operator()(const FileInfo *p_a, const FileInfo *p_b) const {
-			return p_a->file < p_b->file;
-		}
-	};
-
-	void sort_files();
-
 	Vector<FileInfo *> files;
 
 	static void _bind_methods();
@@ -205,6 +197,7 @@ class EditorFileSystem : public Node {
 	};
 
 	HashMap<String, FileCache> file_cache;
+	HashSet<String> dep_update_list;
 
 	struct ScanProgress {
 		float low = 0;
@@ -221,7 +214,7 @@ class EditorFileSystem : public Node {
 
 	void _scan_fs_changes(EditorFileSystemDirectory *p_dir, const ScanProgress &p_progress);
 
-	void _delete_internal_files(String p_file);
+	void _delete_internal_files(const String &p_file);
 
 	HashSet<String> textfile_extensions;
 	HashSet<String> valid_extensions;
@@ -290,7 +283,7 @@ class EditorFileSystem : public Node {
 	struct ImportThreadData {
 		const ImportFile *reimport_files;
 		int reimport_from;
-		int max_index = 0;
+		SafeNumeric<int> max_index;
 	};
 
 	void _reimport_thread(uint32_t p_index, ImportThreadData *p_import_data);
@@ -298,7 +291,7 @@ class EditorFileSystem : public Node {
 	static ResourceUID::ID _resource_saver_get_resource_id_for_path(const String &p_path, bool p_generate);
 
 	bool _scan_extensions();
-	bool _scan_import_support(Vector<String> reimports);
+	bool _scan_import_support(const Vector<String> &reimports);
 
 	Vector<Ref<EditorFileSystemImportFormatSupportQuery>> import_support_queries;
 
@@ -312,11 +305,14 @@ public:
 	EditorFileSystemDirectory *get_filesystem();
 	bool is_scanning() const;
 	bool is_importing() const { return importing; }
+	bool doing_first_scan() const { return first_scan; }
 	float get_scanning_progress() const;
 	void scan();
 	void scan_changes();
 	void update_file(const String &p_file);
+	void update_files(const Vector<String> &p_script_paths);
 	HashSet<String> get_valid_extensions() const;
+	void register_global_class_script(const String &p_search_path, const String &p_target_path);
 
 	EditorFileSystemDirectory *get_filesystem_path(const String &p_path);
 	String get_file_type(const String &p_file) const;

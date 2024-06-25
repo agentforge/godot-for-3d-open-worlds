@@ -38,6 +38,7 @@
 #include "editor/editor_settings.h"
 #include "editor/editor_string_names.h"
 #include "editor/editor_undo_redo_manager.h"
+#include "editor/gui/editor_bottom_panel.h"
 #include "editor/gui/editor_run_bar.h"
 #include "editor/inspector_dock.h"
 #include "editor/plugins/editor_debugger_plugin.h"
@@ -74,7 +75,7 @@ EditorDebuggerNode::EditorDebuggerNode() {
 
 	Ref<StyleBoxEmpty> empty;
 	empty.instantiate();
-	tabs->add_theme_style_override("panel", empty);
+	tabs->add_theme_style_override(SceneStringName(panel), empty);
 
 	auto_switch_remote_scene_tree = EDITOR_GET("debugger/auto_switch_to_remote_scene_tree");
 	_add_debugger();
@@ -90,7 +91,7 @@ EditorDebuggerNode::EditorDebuggerNode() {
 	remote_scene_tree_timeout = EDITOR_GET("debugger/remote_scene_tree_refresh_interval");
 	inspect_edited_object_timeout = EDITOR_GET("debugger/remote_inspect_refresh_interval");
 
-	EditorRunBar::get_singleton()->get_pause_button()->connect("pressed", callable_mp(this, &EditorDebuggerNode::_paused));
+	EditorRunBar::get_singleton()->get_pause_button()->connect(SceneStringName(pressed), callable_mp(this, &EditorDebuggerNode::_paused));
 }
 
 ScriptEditorDebugger *EditorDebuggerNode::_add_debugger() {
@@ -122,7 +123,7 @@ ScriptEditorDebugger *EditorDebuggerNode::_add_debugger() {
 	if (tabs->get_tab_count() > 1) {
 		node->clear_style();
 		tabs->set_tabs_visible(true);
-		tabs->add_theme_style_override("panel", EditorNode::get_singleton()->get_editor_theme()->get_stylebox(SNAME("DebuggerPanel"), EditorStringName(EditorStyles)));
+		tabs->add_theme_style_override(SceneStringName(panel), EditorNode::get_singleton()->get_editor_theme()->get_stylebox(SNAME("DebuggerPanel"), EditorStringName(EditorStyles)));
 	}
 
 	if (!debugger_plugins.is_empty()) {
@@ -261,17 +262,13 @@ void EditorDebuggerNode::set_keep_open(bool p_keep_open) {
 }
 
 Error EditorDebuggerNode::start(const String &p_uri) {
-	ERR_FAIL_COND_V(p_uri.find("://") < 0, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(!p_uri.contains("://"), ERR_INVALID_PARAMETER);
 	if (keep_open && current_uri == p_uri && server.is_valid()) {
 		return OK;
 	}
 	stop(true);
 	current_uri = p_uri;
-	if (EDITOR_GET("run/output/always_open_output_on_play")) {
-		EditorNode::get_singleton()->make_bottom_panel_item_visible(EditorNode::get_log());
-	} else {
-		EditorNode::get_singleton()->make_bottom_panel_item_visible(this);
-	}
+
 	server = Ref<EditorDebuggerServer>(EditorDebuggerServer::create(p_uri.substr(0, p_uri.find("://") + 3)));
 	const Error err = server->start(p_uri);
 	if (err != OK) {
@@ -313,16 +310,23 @@ void EditorDebuggerNode::stop(bool p_force) {
 void EditorDebuggerNode::_notification(int p_what) {
 	switch (p_what) {
 		case EditorSettings::NOTIFICATION_EDITOR_SETTINGS_CHANGED: {
-			if (tabs->get_tab_count() > 1 && EditorThemeManager::is_generated_theme_outdated()) {
+			if (!EditorThemeManager::is_generated_theme_outdated()) {
+				return;
+			}
+
+			if (tabs->get_tab_count() > 1) {
 				add_theme_constant_override("margin_left", -EditorNode::get_singleton()->get_editor_theme()->get_stylebox(SNAME("BottomPanelDebuggerOverride"), EditorStringName(EditorStyles))->get_margin(SIDE_LEFT));
 				add_theme_constant_override("margin_right", -EditorNode::get_singleton()->get_editor_theme()->get_stylebox(SNAME("BottomPanelDebuggerOverride"), EditorStringName(EditorStyles))->get_margin(SIDE_RIGHT));
 
-				tabs->add_theme_style_override("panel", EditorNode::get_singleton()->get_editor_theme()->get_stylebox(SNAME("DebuggerPanel"), EditorStringName(EditorStyles)));
+				tabs->add_theme_style_override(SceneStringName(panel), EditorNode::get_singleton()->get_editor_theme()->get_stylebox(SNAME("DebuggerPanel"), EditorStringName(EditorStyles)));
 			}
+
+			remote_scene_tree->update_icon_max_width();
 		} break;
 
 		case NOTIFICATION_READY: {
 			_update_debug_options();
+			initializing = false;
 		} break;
 
 		case NOTIFICATION_PROCESS: {
@@ -492,7 +496,7 @@ void EditorDebuggerNode::set_script_debug_button(MenuButton *p_button) {
 	p->add_shortcut(ED_GET_SHORTCUT("debugger/continue"), DEBUG_CONTINUE);
 	p->add_separator();
 	p->add_check_shortcut(ED_GET_SHORTCUT("debugger/debug_with_external_editor"), DEBUG_WITH_EXTERNAL_EDITOR);
-	p->connect("id_pressed", callable_mp(this, &EditorDebuggerNode::_menu_option));
+	p->connect(SceneStringName(id_pressed), callable_mp(this, &EditorDebuggerNode::_menu_option));
 
 	_break_state_changed();
 	script_menu->show();
@@ -502,7 +506,7 @@ void EditorDebuggerNode::_break_state_changed() {
 	const bool breaked = get_current_debugger()->is_breaked();
 	const bool can_debug = get_current_debugger()->is_debuggable();
 	if (breaked) { // Show debugger.
-		EditorNode::get_singleton()->make_bottom_panel_item_visible(this);
+		EditorNode::get_bottom_panel()->make_item_visible(this);
 	}
 
 	// Update script menu.
@@ -534,7 +538,9 @@ void EditorDebuggerNode::_menu_option(int p_id) {
 			bool ischecked = script_menu->get_popup()->is_item_checked(script_menu->get_popup()->get_item_index(DEBUG_WITH_EXTERNAL_EDITOR));
 			debug_with_external_editor = !ischecked;
 			script_menu->get_popup()->set_item_checked(script_menu->get_popup()->get_item_index(DEBUG_WITH_EXTERNAL_EDITOR), !ischecked);
-			EditorSettings::get_singleton()->set_project_metadata("debug_options", "debug_with_external_editor", !ischecked);
+			if (!initializing) {
+				EditorSettings::get_singleton()->set_project_metadata("debug_options", "debug_with_external_editor", !ischecked);
+			}
 		} break;
 	}
 }
@@ -556,7 +562,7 @@ void EditorDebuggerNode::_paused() {
 	});
 }
 
-void EditorDebuggerNode::_breaked(bool p_breaked, bool p_can_debug, String p_message, bool p_has_stackdump, int p_debugger) {
+void EditorDebuggerNode::_breaked(bool p_breaked, bool p_can_debug, const String &p_message, bool p_has_stackdump, int p_debugger) {
 	if (get_current_debugger() != get_debugger(p_debugger)) {
 		if (!p_breaked) {
 			return;
@@ -581,7 +587,7 @@ void EditorDebuggerNode::set_breakpoint(const String &p_path, int p_line, bool p
 	emit_signal(SNAME("breakpoint_toggled"), p_path, p_line, p_enabled);
 }
 
-void EditorDebuggerNode::set_breakpoints(const String &p_path, Array p_lines) {
+void EditorDebuggerNode::set_breakpoints(const String &p_path, const Array &p_lines) {
 	for (int i = 0; i < p_lines.size(); i++) {
 		set_breakpoint(p_path, p_lines[i], true);
 	}

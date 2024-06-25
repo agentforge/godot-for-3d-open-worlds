@@ -1149,14 +1149,26 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 		render_data.sdfgi_update_data = p_sdfgi_update_data;
 
 		render_data.render_info = r_render_info;
+
+		if (p_render_buffers.is_valid() && p_reflection_probe.is_null()) {
+			render_data.transparent_bg = texture_storage->render_target_get_transparent(rb->get_render_target());
+		}
 	}
 
 	PagedArray<RID> empty;
 
-	if (get_debug_draw_mode() == RS::VIEWPORT_DEBUG_DRAW_UNSHADED) {
+	if (get_debug_draw_mode() == RS::VIEWPORT_DEBUG_DRAW_UNSHADED || get_debug_draw_mode() == RS::VIEWPORT_DEBUG_DRAW_OVERDRAW) {
 		render_data.lights = &empty;
 		render_data.reflection_probes = &empty;
 		render_data.voxel_gi_instances = &empty;
+		render_data.lightmaps = &empty;
+	}
+
+	if (get_debug_draw_mode() == RS::VIEWPORT_DEBUG_DRAW_UNSHADED ||
+			get_debug_draw_mode() == RS::VIEWPORT_DEBUG_DRAW_OVERDRAW ||
+			get_debug_draw_mode() == RS::VIEWPORT_DEBUG_DRAW_LIGHTING ||
+			get_debug_draw_mode() == RS::VIEWPORT_DEBUG_DRAW_PSSM_SPLITS) {
+		render_data.decals = &empty;
 	}
 
 	Color clear_color;

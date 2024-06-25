@@ -46,6 +46,8 @@
 #ifdef GLES3_ENABLED
 #include "detect_prime_egl.h"
 #include "drivers/gles3/rasterizer_gles3.h"
+#include "wayland/egl_manager_wayland.h"
+#include "wayland/egl_manager_wayland_gles.h"
 #endif
 
 String DisplayServerWayland::_get_app_id_from_context(Context p_context) {
@@ -192,19 +194,37 @@ void DisplayServerWayland::_show_window() {
 
 bool DisplayServerWayland::has_feature(Feature p_feature) const {
 	switch (p_feature) {
+#ifndef DISABLE_DEPRECATED
+		case FEATURE_GLOBAL_MENU: {
+			return (native_menu && native_menu->has_feature(NativeMenu::FEATURE_GLOBAL_MENU));
+		} break;
+#endif
 		case FEATURE_MOUSE:
+		case FEATURE_MOUSE_WARP:
 		case FEATURE_CLIPBOARD:
 		case FEATURE_CURSOR_SHAPE:
+		case FEATURE_CUSTOM_CURSOR_SHAPE:
 		case FEATURE_WINDOW_TRANSPARENCY:
+		case FEATURE_HIDPI:
 		case FEATURE_SWAP_BUFFERS:
 		case FEATURE_KEEP_SCREEN_ON:
-		case FEATURE_CLIPBOARD_PRIMARY:
-#ifdef DBUS_ENABLED
-		case FEATURE_NATIVE_DIALOG:
-#endif
-		case FEATURE_HIDPI: {
+		case FEATURE_CLIPBOARD_PRIMARY: {
 			return true;
 		} break;
+
+		//case FEATURE_NATIVE_DIALOG:
+		//case FEATURE_NATIVE_DIALOG_INPUT:
+#ifdef DBUS_ENABLED
+		case FEATURE_NATIVE_DIALOG_FILE: {
+			return true;
+		} break;
+#endif
+
+#ifdef SPEECHD_ENABLED
+		case FEATURE_TEXT_TO_SPEECH: {
+			return true;
+		} break;
+#endif
 
 		default: {
 			return false;
@@ -530,7 +550,15 @@ float DisplayServerWayland::screen_get_scale(int p_screen) const {
 	MutexLock mutex_lock(wayland_thread.mutex);
 
 	if (p_screen == SCREEN_OF_MAIN_WINDOW) {
-		p_screen = window_get_current_screen();
+		// Wayland does not expose fractional scale factors at the screen-level, but
+		// some code relies on it. Since this special screen is the default and a lot
+		// of code relies on it, we'll return the window's scale, which is what we
+		// really care about. After all, we have very little use of the actual screen
+		// enumeration APIs and we're (for now) in single-window mode anyways.
+		struct wl_surface *wl_surface = wayland_thread.window_get_wl_surface(MAIN_WINDOW_ID);
+		WaylandThread::WindowState *ws = wayland_thread.wl_surface_get_window_state(wl_surface);
+
+		return wayland_thread.window_state_get_scale_factor(ws);
 	}
 
 	return wayland_thread.screen_get_data(p_screen).scale;
@@ -569,9 +597,9 @@ void DisplayServerWayland::screen_set_keep_on(bool p_enable) {
 bool DisplayServerWayland::screen_is_kept_on() const {
 #ifdef DBUS_ENABLED
 	return wayland_thread.window_get_idle_inhibition(MAIN_WINDOW_ID) || screensaver_inhibited;
-#endif
-
+#else
 	return wayland_thread.window_get_idle_inhibition(MAIN_WINDOW_ID);
+#endif
 }
 
 Vector<DisplayServer::WindowID> DisplayServerWayland::get_window_list() const {
@@ -990,36 +1018,8 @@ void DisplayServerWayland::cursor_set_custom_image(const Ref<Resource> &p_cursor
 			wayland_thread.cursor_shape_clear_custom_image(p_shape);
 		}
 
-		Ref<Texture2D> texture = p_cursor;
-		ERR_FAIL_COND(!texture.is_valid());
-		Size2i texture_size;
-
-		Ref<AtlasTexture> atlas_texture = texture;
-
-		if (atlas_texture.is_valid()) {
-			texture_size.width = atlas_texture->get_region().size.x;
-			texture_size.height = atlas_texture->get_region().size.y;
-		} else {
-			texture_size.width = texture->get_width();
-			texture_size.height = texture->get_height();
-		}
-
-		ERR_FAIL_COND(p_hotspot.x < 0 || p_hotspot.y < 0);
-
-		// NOTE: The Wayland protocol says nothing about cursor size limits, yet if
-		// the texture is larger than 256x256 it won't show at least on sway.
-		ERR_FAIL_COND(texture_size.width > 256 || texture_size.height > 256);
-		ERR_FAIL_COND(p_hotspot.x > texture_size.width || p_hotspot.y > texture_size.height);
-		ERR_FAIL_COND(texture_size.height == 0 || texture_size.width == 0);
-
-		Ref<Image> image = texture->get_image();
-		ERR_FAIL_COND(!image.is_valid());
-
-		if (image->is_compressed()) {
-			image = image->duplicate(true);
-			Error err = image->decompress();
-			ERR_FAIL_COND_MSG(err != OK, "Couldn't decompress VRAM-compressed custom mouse cursor image. Switch to a lossless compression mode in the Import dock.");
-		}
+		Ref<Image> image = _get_cursor_image_from_resource(p_cursor, p_hotspot);
+		ERR_FAIL_COND(image.is_null());
 
 		CustomCursor &cursor = custom_cursors[p_shape];
 
@@ -1136,7 +1136,14 @@ void DisplayServerWayland::process_events() {
 			WindowData wd = main_window;
 
 			if (wd.drop_files_callback.is_valid()) {
-				wd.drop_files_callback.call(dropfiles_msg->files);
+				Variant v_files = dropfiles_msg->files;
+				const Variant *v_args[1] = { &v_files };
+				Variant ret;
+				Callable::CallError ce;
+				wd.drop_files_callback.callp((const Variant **)&v_args, 1, ret, ce);
+				if (ce.error != Callable::CallError::CALL_OK) {
+					ERR_PRINT(vformat("Failed to execute drop files callback: %s.", Variant::get_callable_error_text(wd.drop_files_callback, v_args, 1, ce)));
+				}
 			}
 		}
 	}
@@ -1170,6 +1177,12 @@ void DisplayServerWayland::process_events() {
 		}
 	}
 
+#ifdef DBUS_ENABLED
+	if (portal_desktop) {
+		portal_desktop->process_file_dialog_callbacks();
+	}
+#endif
+
 	wayland_thread.mutex.unlock();
 
 	Input::get_singleton()->flush_buffered_events();
@@ -1179,14 +1192,6 @@ void DisplayServerWayland::release_rendering_thread() {
 #ifdef GLES3_ENABLED
 	if (egl_manager) {
 		egl_manager->release_current();
-	}
-#endif
-}
-
-void DisplayServerWayland::make_rendering_thread() {
-#ifdef GLES3_ENABLED
-	if (egl_manager) {
-		egl_manager->make_current();
 	}
 #endif
 }
@@ -1210,6 +1215,15 @@ void DisplayServerWayland::set_context(Context p_context) {
 	wayland_thread.window_set_app_id(MAIN_WINDOW_ID, app_id);
 }
 
+bool DisplayServerWayland::is_window_transparency_available() const {
+#if defined(RD_ENABLED)
+	if (rendering_device && !rendering_device->is_composite_alpha_supported()) {
+		return false;
+	}
+#endif
+	return OS::get_singleton()->is_layered_allowed();
+}
+
 Vector<String> DisplayServerWayland::get_rendering_drivers_func() {
 	Vector<String> drivers;
 
@@ -1219,13 +1233,14 @@ Vector<String> DisplayServerWayland::get_rendering_drivers_func() {
 
 #ifdef GLES3_ENABLED
 	drivers.push_back("opengl3");
+	drivers.push_back("opengl3_es");
 #endif
 
 	return drivers;
 }
 
-DisplayServer *DisplayServerWayland::create_func(const String &p_rendering_driver, WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Point2i *p_position, const Size2i &p_resolution, int p_screen, Error &r_error) {
-	DisplayServer *ds = memnew(DisplayServerWayland(p_rendering_driver, p_mode, p_vsync_mode, p_flags, p_resolution, r_error));
+DisplayServer *DisplayServerWayland::create_func(const String &p_rendering_driver, WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Point2i *p_position, const Size2i &p_resolution, int p_screen, Context p_context, Error &r_error) {
+	DisplayServer *ds = memnew(DisplayServerWayland(p_rendering_driver, p_mode, p_vsync_mode, p_flags, p_resolution, p_context, r_error));
 	if (r_error != OK) {
 		ERR_PRINT("Can't create the Wayland display server.");
 		memdelete(ds);
@@ -1235,7 +1250,7 @@ DisplayServer *DisplayServerWayland::create_func(const String &p_rendering_drive
 	return ds;
 }
 
-DisplayServerWayland::DisplayServerWayland(const String &p_rendering_driver, WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i &p_resolution, Error &r_error) {
+DisplayServerWayland::DisplayServerWayland(const String &p_rendering_driver, WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i &p_resolution, Context p_context, Error &r_error) {
 #ifdef GLES3_ENABLED
 #ifdef SOWRAP_ENABLED
 #ifdef DEBUG_ENABLED
@@ -1247,6 +1262,7 @@ DisplayServerWayland::DisplayServerWayland(const String &p_rendering_driver, Win
 #endif // GLES3_ENABLED
 
 	r_error = ERR_UNAVAILABLE;
+	context = p_context;
 
 	Error thread_err = wayland_thread.init();
 
@@ -1258,6 +1274,8 @@ DisplayServerWayland::DisplayServerWayland(const String &p_rendering_driver, Win
 	// Input.
 	Input::get_singleton()->set_event_dispatch_function(dispatch_input_events);
 
+	native_menu = memnew(NativeMenu);
+
 #ifdef SPEECHD_ENABLED
 	// Init TTS
 	tts = memnew(TTS_Linux);
@@ -1267,14 +1285,14 @@ DisplayServerWayland::DisplayServerWayland(const String &p_rendering_driver, Win
 
 #ifdef RD_ENABLED
 #ifdef VULKAN_ENABLED
-	if (p_rendering_driver == "vulkan") {
+	if (rendering_driver == "vulkan") {
 		rendering_context = memnew(RenderingContextDriverVulkanWayland);
 	}
 #endif
 
 	if (rendering_context) {
 		if (rendering_context->initialize() != OK) {
-			ERR_PRINT(vformat("Could not initialize %s", p_rendering_driver));
+			ERR_PRINT(vformat("Could not initialize %s", rendering_driver));
 			memdelete(rendering_context);
 			rendering_context = nullptr;
 			r_error = ERR_CANT_CREATE;
@@ -1284,7 +1302,14 @@ DisplayServerWayland::DisplayServerWayland(const String &p_rendering_driver, Win
 #endif
 
 #ifdef GLES3_ENABLED
-	if (p_rendering_driver == "opengl3") {
+	if (rendering_driver == "opengl3" || rendering_driver == "opengl3_es") {
+#ifdef SOWRAP_ENABLED
+		if (initialize_wayland_egl(dylibloader_verbose) != 0) {
+			WARN_PRINT("Can't load the Wayland EGL library.");
+			return;
+		}
+#endif // SOWRAP_ENABLED
+
 		if (getenv("DRI_PRIME") == nullptr) {
 			int prime_idx = -1;
 
@@ -1317,7 +1342,7 @@ DisplayServerWayland::DisplayServerWayland(const String &p_rendering_driver, Win
 
 			if (prime_idx == -1) {
 				print_verbose("Detecting GPUs, set DRI_PRIME in the environment to override GPU detection logic.");
-				prime_idx = DetectPrimeEGL::detect_prime();
+				prime_idx = DetectPrimeEGL::detect_prime(EGL_PLATFORM_WAYLAND_KHR);
 			}
 
 			if (prime_idx) {
@@ -1327,23 +1352,38 @@ DisplayServerWayland::DisplayServerWayland(const String &p_rendering_driver, Win
 			}
 		}
 
-		egl_manager = memnew(EGLManagerWayland);
+		if (rendering_driver == "opengl3") {
+			egl_manager = memnew(EGLManagerWayland);
 
-#ifdef SOWRAP_ENABLED
-		if (initialize_wayland_egl(dylibloader_verbose) != 0) {
-			WARN_PRINT("Can't load the Wayland EGL library.");
-			return;
+			if (egl_manager->initialize(wayland_thread.get_wl_display()) != OK || egl_manager->open_display(wayland_thread.get_wl_display()) != OK) {
+				memdelete(egl_manager);
+				egl_manager = nullptr;
+
+				bool fallback = GLOBAL_GET("rendering/gl_compatibility/fallback_to_gles");
+				if (fallback) {
+					WARN_PRINT("Your video card drivers seem not to support the required OpenGL version, switching to OpenGLES.");
+					rendering_driver = "opengl3_es";
+				} else {
+					r_error = ERR_UNAVAILABLE;
+					ERR_FAIL_MSG("Could not initialize OpenGL.");
+				}
+			} else {
+				RasterizerGLES3::make_current(true);
+			}
 		}
-#endif // SOWRAP_ENABLED
 
-		if (egl_manager->initialize() != OK) {
-			memdelete(egl_manager);
-			egl_manager = nullptr;
-			r_error = ERR_CANT_CREATE;
-			ERR_FAIL_MSG("Could not initialize GLES3.");
+		if (rendering_driver == "opengl3_es") {
+			egl_manager = memnew(EGLManagerWaylandGLES);
+
+			if (egl_manager->initialize(wayland_thread.get_wl_display()) != OK) {
+				memdelete(egl_manager);
+				egl_manager = nullptr;
+				r_error = ERR_CANT_CREATE;
+				ERR_FAIL_MSG("Could not initialize GLES3.");
+			}
+
+			RasterizerGLES3::make_current(false);
 		}
-
-		RasterizerGLES3::make_current(true);
 	}
 #endif // GLES3_ENABLED
 
@@ -1382,6 +1422,12 @@ DisplayServerWayland::DisplayServerWayland(const String &p_rendering_driver, Win
 
 DisplayServerWayland::~DisplayServerWayland() {
 	// TODO: Multiwindow support.
+
+	if (native_menu) {
+		memdelete(native_menu);
+		native_menu = nullptr;
+	}
+
 	if (main_window.visible) {
 #ifdef VULKAN_ENABLED
 		if (rendering_device) {

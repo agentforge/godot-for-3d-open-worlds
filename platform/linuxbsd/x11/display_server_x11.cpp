@@ -41,7 +41,6 @@
 #include "core/string/ustring.h"
 #include "drivers/png/png_driver_common.h"
 #include "main/main.h"
-#include "scene/resources/atlas_texture.h"
 
 #if defined(VULKAN_ENABLED)
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
@@ -110,6 +109,11 @@ static String get_atom_name(Display *p_disp, Atom p_atom) {
 
 bool DisplayServerX11::has_feature(Feature p_feature) const {
 	switch (p_feature) {
+#ifndef DISABLE_DEPRECATED
+		case FEATURE_GLOBAL_MENU: {
+			return (native_menu && native_menu->has_feature(NativeMenu::FEATURE_GLOBAL_MENU));
+		} break;
+#endif
 		case FEATURE_SUBWINDOWS:
 #ifdef TOUCH_ENABLED
 		case FEATURE_TOUCHSCREEN:
@@ -124,8 +128,10 @@ bool DisplayServerX11::has_feature(Feature p_feature) const {
 		//case FEATURE_HIDPI:
 		case FEATURE_ICON:
 #ifdef DBUS_ENABLED
-		case FEATURE_NATIVE_DIALOG:
+		case FEATURE_NATIVE_DIALOG_FILE:
 #endif
+		//case FEATURE_NATIVE_DIALOG:
+		//case FEATURE_NATIVE_DIALOG_INPUT:
 		//case FEATURE_NATIVE_ICON:
 		case FEATURE_SWAP_BUFFERS:
 #ifdef DBUS_ENABLED
@@ -133,8 +139,9 @@ bool DisplayServerX11::has_feature(Feature p_feature) const {
 #endif
 		case FEATURE_CLIPBOARD_PRIMARY:
 		case FEATURE_TEXT_TO_SPEECH:
-		case FEATURE_SCREEN_CAPTURE:
 			return true;
+		case FEATURE_SCREEN_CAPTURE:
+			return !xwayland;
 		default: {
 		}
 	}
@@ -496,7 +503,34 @@ Point2i DisplayServerX11::mouse_get_position() const {
 }
 
 BitField<MouseButtonMask> DisplayServerX11::mouse_get_button_state() const {
-	return last_button_state;
+	int number_of_screens = XScreenCount(x11_display);
+	for (int i = 0; i < number_of_screens; i++) {
+		Window root, child;
+		int root_x, root_y, win_x, win_y;
+		unsigned int mask;
+		if (XQueryPointer(x11_display, XRootWindow(x11_display, i), &root, &child, &root_x, &root_y, &win_x, &win_y, &mask)) {
+			BitField<MouseButtonMask> last_button_state = 0;
+
+			if (mask & Button1Mask) {
+				last_button_state.set_flag(MouseButtonMask::LEFT);
+			}
+			if (mask & Button2Mask) {
+				last_button_state.set_flag(MouseButtonMask::MIDDLE);
+			}
+			if (mask & Button3Mask) {
+				last_button_state.set_flag(MouseButtonMask::RIGHT);
+			}
+			if (mask & Button4Mask) {
+				last_button_state.set_flag(MouseButtonMask::MB_XBUTTON1);
+			}
+			if (mask & Button5Mask) {
+				last_button_state.set_flag(MouseButtonMask::MB_XBUTTON2);
+			}
+
+			return last_button_state;
+		}
+	}
+	return 0;
 }
 
 void DisplayServerX11::clipboard_set(const String &p_text) {
@@ -1001,7 +1035,8 @@ int DisplayServerX11::get_screen_count() const {
 	if (xinerama_ext_ok && XineramaQueryExtension(x11_display, &event_base, &error_base)) {
 		XineramaScreenInfo *xsi = XineramaQueryScreens(x11_display, &count);
 		XFree(xsi);
-	} else {
+	}
+	if (count == 0) {
 		count = XScreenCount(x11_display);
 	}
 
@@ -1062,25 +1097,29 @@ Rect2i DisplayServerX11::_screen_get_rect(int p_screen) const {
 	ERR_FAIL_COND_V(p_screen < 0, rect);
 
 	// Using Xinerama Extension.
+	bool found = false;
 	int event_base, error_base;
 	if (xinerama_ext_ok && XineramaQueryExtension(x11_display, &event_base, &error_base)) {
 		int count;
 		XineramaScreenInfo *xsi = XineramaQueryScreens(x11_display, &count);
-
-		// Check if screen is valid.
-		if (p_screen < count) {
-			rect.position.x = xsi[p_screen].x_org;
-			rect.position.y = xsi[p_screen].y_org;
-			rect.size.width = xsi[p_screen].width;
-			rect.size.height = xsi[p_screen].height;
-		} else {
-			ERR_PRINT("Invalid screen index: " + itos(p_screen) + "(count: " + itos(count) + ").");
-		}
-
 		if (xsi) {
+			if (count > 0) {
+				// Check if screen is valid.
+				if (p_screen < count) {
+					rect.position.x = xsi[p_screen].x_org;
+					rect.position.y = xsi[p_screen].y_org;
+					rect.size.width = xsi[p_screen].width;
+					rect.size.height = xsi[p_screen].height;
+					found = true;
+				} else {
+					ERR_PRINT(vformat("Invalid screen index: %d (count: %d).", p_screen, count));
+				}
+			}
 			XFree(xsi);
 		}
-	} else {
+	}
+
+	if (!found) {
 		int count = XScreenCount(x11_display);
 		if (p_screen < count) {
 			Window root = XRootWindow(x11_display, p_screen);
@@ -1091,7 +1130,7 @@ Rect2i DisplayServerX11::_screen_get_rect(int p_screen) const {
 			rect.size.width = xwa.width;
 			rect.size.height = xwa.height;
 		} else {
-			ERR_PRINT("Invalid screen index: " + itos(p_screen) + "(count: " + itos(count) + ").");
+			ERR_PRINT(vformat("Invalid screen index: %d (count: %d).", p_screen, count));
 		}
 	}
 
@@ -1456,9 +1495,20 @@ int DisplayServerX11::screen_get_dpi(int p_screen) const {
 	return 96;
 }
 
+int get_image_errorhandler(Display *dpy, XErrorEvent *ev) {
+	return 0;
+}
+
 Color DisplayServerX11::screen_get_pixel(const Point2i &p_position) const {
 	Point2i pos = p_position;
 
+	if (xwayland) {
+		return Color();
+	}
+
+	int (*old_handler)(Display *, XErrorEvent *) = XSetErrorHandler(&get_image_errorhandler);
+
+	Color color;
 	int number_of_screens = XScreenCount(x11_display);
 	for (int i = 0; i < number_of_screens; i++) {
 		Window root = XRootWindow(x11_display, i);
@@ -1471,12 +1521,15 @@ Color DisplayServerX11::screen_get_pixel(const Point2i &p_position) const {
 				c.pixel = XGetPixel(image, 0, 0);
 				XFree(image);
 				XQueryColor(x11_display, XDefaultColormap(x11_display, i), &c);
-				return Color(float(c.red) / 65535.0, float(c.green) / 65535.0, float(c.blue) / 65535.0, 1.0);
+				color = Color(float(c.red) / 65535.0, float(c.green) / 65535.0, float(c.blue) / 65535.0, 1.0);
+				break;
 			}
 		}
 	}
 
-	return Color();
+	XSetErrorHandler(old_handler);
+
+	return color;
 }
 
 Ref<Image> DisplayServerX11::screen_get_image(int p_screen) const {
@@ -1495,27 +1548,41 @@ Ref<Image> DisplayServerX11::screen_get_image(int p_screen) const {
 
 	ERR_FAIL_COND_V(p_screen < 0, Ref<Image>());
 
+	if (xwayland) {
+		return Ref<Image>();
+	}
+
+	int (*old_handler)(Display *, XErrorEvent *) = XSetErrorHandler(&get_image_errorhandler);
+
 	XImage *image = nullptr;
 
+	bool found = false;
 	int event_base, error_base;
 	if (xinerama_ext_ok && XineramaQueryExtension(x11_display, &event_base, &error_base)) {
 		int xin_count;
 		XineramaScreenInfo *xsi = XineramaQueryScreens(x11_display, &xin_count);
-		if (p_screen < xin_count) {
-			int x_count = XScreenCount(x11_display);
-			for (int i = 0; i < x_count; i++) {
-				Window root = XRootWindow(x11_display, i);
-				XWindowAttributes root_attrs;
-				XGetWindowAttributes(x11_display, root, &root_attrs);
-				if ((xsi[p_screen].x_org >= root_attrs.x) && (xsi[p_screen].x_org <= root_attrs.x + root_attrs.width) && (xsi[p_screen].y_org >= root_attrs.y) && (xsi[p_screen].y_org <= root_attrs.y + root_attrs.height)) {
-					image = XGetImage(x11_display, root, xsi[p_screen].x_org, xsi[p_screen].y_org, xsi[p_screen].width, xsi[p_screen].height, AllPlanes, ZPixmap);
-					break;
+		if (xsi) {
+			if (xin_count > 0) {
+				if (p_screen < xin_count) {
+					int x_count = XScreenCount(x11_display);
+					for (int i = 0; i < x_count; i++) {
+						Window root = XRootWindow(x11_display, i);
+						XWindowAttributes root_attrs;
+						XGetWindowAttributes(x11_display, root, &root_attrs);
+						if ((xsi[p_screen].x_org >= root_attrs.x) && (xsi[p_screen].x_org <= root_attrs.x + root_attrs.width) && (xsi[p_screen].y_org >= root_attrs.y) && (xsi[p_screen].y_org <= root_attrs.y + root_attrs.height)) {
+							found = true;
+							image = XGetImage(x11_display, root, xsi[p_screen].x_org, xsi[p_screen].y_org, xsi[p_screen].width, xsi[p_screen].height, AllPlanes, ZPixmap);
+							break;
+						}
+					}
+				} else {
+					ERR_PRINT(vformat("Invalid screen index: %d (count: %d).", p_screen, xin_count));
 				}
 			}
-		} else {
-			ERR_FAIL_V_MSG(Ref<Image>(), "Invalid screen index: " + itos(p_screen) + "(count: " + itos(xin_count) + ").");
+			XFree(xsi);
 		}
-	} else {
+	}
+	if (!found) {
 		int x_count = XScreenCount(x11_display);
 		if (p_screen < x_count) {
 			Window root = XRootWindow(x11_display, p_screen);
@@ -1525,9 +1592,11 @@ Ref<Image> DisplayServerX11::screen_get_image(int p_screen) const {
 
 			image = XGetImage(x11_display, root, root_attrs.x, root_attrs.y, root_attrs.width, root_attrs.height, AllPlanes, ZPixmap);
 		} else {
-			ERR_FAIL_V_MSG(Ref<Image>(), "Invalid screen index: " + itos(p_screen) + "(count: " + itos(x_count) + ").");
+			ERR_PRINT(vformat("Invalid screen index: %d (count: %d).", p_screen, x_count));
 		}
 	}
+
+	XSetErrorHandler(old_handler);
 
 	Ref<Image> img;
 	if (image) {
@@ -1991,8 +2060,7 @@ void DisplayServerX11::window_set_current_screen(int p_screen, WindowID p_window
 		Size2i wsize = window_get_size(p_window);
 		wpos += srect.position;
 		if (srect != Rect2i()) {
-			wpos.x = CLAMP(wpos.x, srect.position.x, srect.position.x + srect.size.width - wsize.width / 3);
-			wpos.y = CLAMP(wpos.y, srect.position.y, srect.position.y + srect.size.height - wsize.height / 3);
+			wpos = wpos.clamp(srect.position, srect.position + srect.size - wsize / 3);
 		}
 		window_set_position(wpos, p_window);
 	}
@@ -2220,8 +2288,7 @@ void DisplayServerX11::window_set_size(const Size2i p_size, WindowID p_window) {
 	ERR_FAIL_COND(!windows.has(p_window));
 
 	Size2i size = p_size;
-	size.x = MAX(1, size.x);
-	size.y = MAX(1, size.y);
+	size = size.maxi(1);
 
 	WindowData &wd = windows[p_window];
 
@@ -2252,7 +2319,7 @@ void DisplayServerX11::window_set_size(const Size2i p_size, WindowID p_window) {
 			break;
 		}
 
-		usleep(10000);
+		OS::get_singleton()->delay_usec(10'000);
 	}
 
 	// Keep rendering context window size in sync
@@ -2527,7 +2594,7 @@ void DisplayServerX11::_set_wm_maximized(WindowID p_window, bool p_enabled) {
 		// Give up after 0.5s, it's not going to happen on this WM.
 		// https://github.com/godotengine/godot/issues/19978
 		for (int attempt = 0; window_get_mode(p_window) != WINDOW_MODE_MAXIMIZED && attempt < 50; attempt++) {
-			usleep(10000);
+			OS::get_singleton()->delay_usec(10'000);
 		}
 	}
 	wd.maximized = p_enabled;
@@ -3064,39 +3131,9 @@ void DisplayServerX11::cursor_set_custom_image(const Ref<Resource> &p_cursor, Cu
 			cursors_cache.erase(p_shape);
 		}
 
-		Ref<Texture2D> texture = p_cursor;
-		ERR_FAIL_COND(!texture.is_valid());
-		Ref<AtlasTexture> atlas_texture = p_cursor;
-		Size2i texture_size;
-		Rect2i atlas_rect;
-
-		if (atlas_texture.is_valid()) {
-			texture = atlas_texture->get_atlas();
-
-			atlas_rect.size.width = texture->get_width();
-			atlas_rect.size.height = texture->get_height();
-			atlas_rect.position.x = atlas_texture->get_region().position.x;
-			atlas_rect.position.y = atlas_texture->get_region().position.y;
-
-			texture_size.width = atlas_texture->get_region().size.x;
-			texture_size.height = atlas_texture->get_region().size.y;
-		} else {
-			texture_size.width = texture->get_width();
-			texture_size.height = texture->get_height();
-		}
-
-		ERR_FAIL_COND(p_hotspot.x < 0 || p_hotspot.y < 0);
-		ERR_FAIL_COND(texture_size.width > 256 || texture_size.height > 256);
-		ERR_FAIL_COND(p_hotspot.x > texture_size.width || p_hotspot.y > texture_size.height);
-
-		Ref<Image> image = texture->get_image();
-
-		ERR_FAIL_COND(!image.is_valid());
-		if (image->is_compressed()) {
-			image = image->duplicate(true);
-			Error err = image->decompress();
-			ERR_FAIL_COND_MSG(err != OK, "Couldn't decompress VRAM-compressed custom mouse cursor image. Switch to a lossless compression mode in the Import dock.");
-		}
+		Ref<Image> image = _get_cursor_image_from_resource(p_cursor, p_hotspot);
+		ERR_FAIL_COND(image.is_null());
+		Vector2i texture_size = image->get_size();
 
 		// Create the cursor structure
 		XcursorImage *cursor_image = XcursorImageCreate(texture_size.width, texture_size.height);
@@ -3112,13 +3149,8 @@ void DisplayServerX11::cursor_set_custom_image(const Ref<Resource> &p_cursor, Cu
 		cursor_image->pixels = (XcursorPixel *)memalloc(size);
 
 		for (XcursorPixel index = 0; index < image_size; index++) {
-			int row_index = floor(index / texture_size.width) + atlas_rect.position.y;
-			int column_index = (index % int(texture_size.width)) + atlas_rect.position.x;
-
-			if (atlas_texture.is_valid()) {
-				column_index = MIN(column_index, atlas_rect.size.width - 1);
-				row_index = MIN(row_index, atlas_rect.size.height - 1);
-			}
+			int row_index = floor(index / texture_size.width);
+			int column_index = index % int(texture_size.width);
 
 			*(cursor_image->pixels + index) = image->get_pixel(column_index, row_index).to_argb32();
 		}
@@ -3361,18 +3393,6 @@ void DisplayServerX11::_get_key_modifier_state(unsigned int p_x11_state, Ref<Inp
 	state->set_ctrl_pressed((p_x11_state & ControlMask));
 	state->set_alt_pressed((p_x11_state & Mod1Mask /*|| p_x11_state&Mod5Mask*/)); //altgr should not count as alt
 	state->set_meta_pressed((p_x11_state & Mod4Mask));
-}
-
-BitField<MouseButtonMask> DisplayServerX11::_get_mouse_button_state(MouseButton p_x11_button, int p_x11_type) {
-	MouseButtonMask mask = mouse_button_to_mask(p_x11_button);
-
-	if (p_x11_type == ButtonPress) {
-		last_button_state.set_flag(mask);
-	} else {
-		last_button_state.clear_flag(mask);
-	}
-
-	return last_button_state;
 }
 
 void DisplayServerX11::_handle_key_event(WindowID p_window, XKeyEvent *p_event, LocalVector<XEvent> &p_events, uint32_t &p_event_index, bool p_echo) {
@@ -4187,8 +4207,11 @@ void DisplayServerX11::popup_open(WindowID p_window) {
 		}
 	}
 
+	// Detect tooltips and other similar popups that shouldn't block input to their parent.
+	bool ignores_input = window_get_flag(WINDOW_FLAG_NO_FOCUS, p_window) && window_get_flag(WINDOW_FLAG_MOUSE_PASSTHROUGH, p_window);
+
 	WindowData &wd = windows[p_window];
-	if (wd.is_popup || has_popup_ancestor) {
+	if (wd.is_popup || (has_popup_ancestor && !ignores_input)) {
 		// Find current popup parent, or root popup if new window is not transient.
 		List<WindowID>::Element *C = nullptr;
 		List<WindowID>::Element *E = popup_list.back();
@@ -4218,7 +4241,10 @@ void DisplayServerX11::popup_close(WindowID p_window) {
 		WindowID win_id = E->get();
 		popup_list.erase(E);
 
-		_send_window_event(windows[win_id], DisplayServerX11::WINDOW_EVENT_CLOSE_REQUEST);
+		if (win_id != p_window) {
+			// Only request close on related windows, not this window.  We are already processing it.
+			_send_window_event(windows[win_id], DisplayServerX11::WINDOW_EVENT_CLOSE_REQUEST);
+		}
 		E = F;
 	}
 }
@@ -4293,7 +4319,9 @@ bool DisplayServerX11::_window_focus_check() {
 }
 
 void DisplayServerX11::process_events() {
-	_THREAD_SAFE_METHOD_
+	ERR_FAIL_COND(!Thread::is_main_thread());
+
+	_THREAD_SAFE_LOCK_
 
 #ifdef DISPLAY_SERVER_X11_DEBUG_LOGS_ENABLED
 	static int frame = 0;
@@ -4731,19 +4759,6 @@ void DisplayServerX11::process_events() {
 					break;
 				}
 
-				const WindowData &wd = windows[window_id];
-
-				XWindowAttributes xwa;
-				XSync(x11_display, False);
-				XGetWindowAttributes(x11_display, wd.x11_window, &xwa);
-
-				// Set focus when menu window is re-used.
-				// RevertToPointerRoot is used to make sure we don't lose all focus in case
-				// a subwindow and its parent are both destroyed.
-				if ((xwa.map_state == IsViewable) && !wd.no_focus && !wd.is_popup && _window_focus_check()) {
-					_set_input_focus(wd.x11_window, RevertToPointerRoot);
-				}
-
 				_window_changed(&event);
 			} break;
 
@@ -4770,11 +4785,19 @@ void DisplayServerX11::process_events() {
 				} else if (mb->get_button_index() == MouseButton::MIDDLE) {
 					mb->set_button_index(MouseButton::RIGHT);
 				}
-				mb->set_button_mask(_get_mouse_button_state(mb->get_button_index(), event.xbutton.type));
 				mb->set_position(Vector2(event.xbutton.x, event.xbutton.y));
 				mb->set_global_position(mb->get_position());
 
 				mb->set_pressed((event.type == ButtonPress));
+
+				if (mb->is_pressed() && mb->get_button_index() >= MouseButton::WHEEL_UP && mb->get_button_index() <= MouseButton::WHEEL_RIGHT) {
+					MouseButtonMask mask = mouse_button_to_mask(mb->get_button_index());
+					BitField<MouseButtonMask> scroll_mask = mouse_get_button_state();
+					scroll_mask.set_flag(mask);
+					mb->set_button_mask(scroll_mask);
+				} else {
+					mb->set_button_mask(mouse_get_button_state());
+				}
 
 				const WindowData &wd = windows[window_id];
 
@@ -5030,8 +5053,15 @@ void DisplayServerX11::process_events() {
 						files.write[i] = files[i].replace("file://", "").uri_decode();
 					}
 
-					if (!windows[window_id].drop_files_callback.is_null()) {
-						windows[window_id].drop_files_callback.call(files);
+					if (windows[window_id].drop_files_callback.is_valid()) {
+						Variant v_files = files;
+						const Variant *v_args[1] = { &v_files };
+						Variant ret;
+						Callable::CallError ce;
+						windows[window_id].drop_files_callback.callp((const Variant **)&v_args, 1, ret, ce);
+						if (ce.error != Callable::CallError::CALL_OK) {
+							ERR_PRINT(vformat("Failed to execute drop files callback: %s.", Variant::get_callable_error_text(windows[window_id].drop_files_callback, v_args, 1, ce)));
+						}
 					}
 
 					//Reply that all is well.
@@ -5135,6 +5165,14 @@ void DisplayServerX11::process_events() {
 		*/
 	}
 
+#ifdef DBUS_ENABLED
+	if (portal_desktop) {
+		portal_desktop->process_file_dialog_callbacks();
+	}
+#endif
+
+	_THREAD_SAFE_UNLOCK_
+
 	Input::get_singleton()->flush_buffered_events();
 }
 
@@ -5145,17 +5183,6 @@ void DisplayServerX11::release_rendering_thread() {
 	}
 	if (gl_manager_egl) {
 		gl_manager_egl->release_current();
-	}
-#endif
-}
-
-void DisplayServerX11::make_rendering_thread() {
-#if defined(GLES3_ENABLED)
-	if (gl_manager) {
-		gl_manager->make_current();
-	}
-	if (gl_manager_egl) {
-		gl_manager_egl->make_current();
 	}
 #endif
 }
@@ -5218,6 +5245,23 @@ void DisplayServerX11::set_context(Context p_context) {
 	}
 }
 
+bool DisplayServerX11::is_window_transparency_available() const {
+	CharString net_wm_cm_name = vformat("_NET_WM_CM_S%d", XDefaultScreen(x11_display)).ascii();
+	Atom net_wm_cm = XInternAtom(x11_display, net_wm_cm_name.get_data(), False);
+	if (net_wm_cm == None) {
+		return false;
+	}
+	if (XGetSelectionOwner(x11_display, net_wm_cm) == None) {
+		return false;
+	}
+#if defined(RD_ENABLED)
+	if (rendering_device && !rendering_device->is_composite_alpha_supported()) {
+		return false;
+	}
+#endif
+	return OS::get_singleton()->is_layered_allowed();
+}
+
 void DisplayServerX11::set_native_icon(const String &p_filename) {
 	WARN_PRINT("Native icon not supported by this display server.");
 }
@@ -5250,7 +5294,7 @@ void DisplayServerX11::set_icon(const Ref<Image> &p_icon) {
 			if (g_set_icon_error) {
 				g_set_icon_error = false;
 
-				WARN_PRINT("Icon too large, attempting to resize icon.");
+				WARN_PRINT(vformat("Icon too large (%dx%d), attempting to downscale icon.", w, h));
 
 				int new_width, new_height;
 				if (w > h) {
@@ -5359,8 +5403,8 @@ Vector<String> DisplayServerX11::get_rendering_drivers_func() {
 	return drivers;
 }
 
-DisplayServer *DisplayServerX11::create_func(const String &p_rendering_driver, WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Error &r_error) {
-	DisplayServer *ds = memnew(DisplayServerX11(p_rendering_driver, p_mode, p_vsync_mode, p_flags, p_position, p_resolution, p_screen, r_error));
+DisplayServer *DisplayServerX11::create_func(const String &p_rendering_driver, WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Context p_context, Error &r_error) {
+	DisplayServer *ds = memnew(DisplayServerX11(p_rendering_driver, p_mode, p_vsync_mode, p_flags, p_position, p_resolution, p_screen, p_context, r_error));
 	if (r_error != OK) {
 		if (p_rendering_driver == "vulkan") {
 			String executable_name = OS::get_singleton()->get_executable_path().get_file();
@@ -5489,8 +5533,7 @@ DisplayServerX11::WindowID DisplayServerX11::_create_window(WindowMode p_mode, V
 	} else {
 		Rect2i srect = screen_get_usable_rect(rq_screen);
 		Point2i wpos = p_rect.position;
-		wpos.x = CLAMP(wpos.x, srect.position.x, srect.position.x + srect.size.width - p_rect.size.width / 3);
-		wpos.y = CLAMP(wpos.y, srect.position.y, srect.position.y + srect.size.height - p_rect.size.height / 3);
+		wpos = wpos.clamp(srect.position, srect.position + srect.size - p_rect.size / 3);
 
 		win_rect.position = wpos;
 	}
@@ -5792,8 +5835,13 @@ static ::XIMStyle _get_best_xim_style(const ::XIMStyle &p_style_a, const ::XIMSt
 	return p_style_a;
 }
 
-DisplayServerX11::DisplayServerX11(const String &p_rendering_driver, WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Error &r_error) {
+DisplayServerX11::DisplayServerX11(const String &p_rendering_driver, WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Context p_context, Error &r_error) {
 	KeyMappingX11::initialize();
+
+	xwayland = OS::get_singleton()->get_environment("XDG_SESSION_TYPE").to_lower() == "wayland";
+
+	native_menu = memnew(NativeMenu);
+	context = p_context;
 
 #ifdef SOWRAP_ENABLED
 #ifdef DEBUG_ENABLED
@@ -6386,6 +6434,11 @@ DisplayServerX11::~DisplayServerX11() {
 
 	events_thread_done.set();
 	events_thread.wait_to_finish();
+
+	if (native_menu) {
+		memdelete(native_menu);
+		native_menu = nullptr;
+	}
 
 	//destroy all windows
 	for (KeyValue<WindowID, WindowData> &E : windows) {

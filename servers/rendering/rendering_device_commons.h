@@ -810,6 +810,8 @@ public:
 		LIMIT_SUBGROUP_OPERATIONS,
 		LIMIT_VRS_TEXEL_WIDTH,
 		LIMIT_VRS_TEXEL_HEIGHT,
+		LIMIT_VRS_MAX_FRAGMENT_WIDTH,
+		LIMIT_VRS_MAX_FRAGMENT_HEIGHT,
 	};
 
 	enum Features {
@@ -878,6 +880,7 @@ protected:
 
 	static const char *SHADER_STAGE_NAMES[SHADER_STAGE_MAX];
 
+public:
 	struct ShaderUniform {
 		UniformType type = UniformType::UNIFORM_TYPE_MAX;
 		bool writable = false;
@@ -911,6 +914,8 @@ protected:
 
 	struct ShaderSpecializationConstant : public PipelineSpecializationConstant {
 		BitField<ShaderStage> stages;
+
+		bool operator<(const ShaderSpecializationConstant &p_other) const { return constant_id < p_other.constant_id; }
 	};
 
 	struct ShaderDescription {
@@ -925,6 +930,7 @@ protected:
 		Vector<ShaderStage> stages;
 	};
 
+protected:
 	struct ShaderReflection : public ShaderDescription {
 		BitField<ShaderStage> stages;
 		BitField<ShaderStage> push_constant_stages;
