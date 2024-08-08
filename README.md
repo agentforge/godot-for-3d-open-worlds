@@ -8,13 +8,14 @@ This flavor of Godot 4.x engine is made to accommodate large open-world 3D games
 
 This fork is regularly synchronized with [4.x branch](https://github.com/godotengine/godot/tree/master).
 
-Available for Windows x86-64, Linux 32-bit and x86-64, Linux armv8 (64 bit), Android armv7 and armv8.
+Available for Windows x86-64, Linux x86-32 and x86-64, Linux ARM32 and ARM64, Android ARM32 and ARM64.
 
 Implemented tweaks:
 * Far plane (z-far) upper limit is set to 9e18 meters.
 * [Large World Coordinates](https://docs.godotengine.org/en/stable/tutorials/physics/large_world_coordinates.html) are used when compiling (double precision floats).
 * Increased editor zoom out distance to galactic scale (depth buffer must be adjusted for such scales, see below).
 * Increased editor zoom increment for faster zooming.
+* Implemented tweaks to mobile rendering backend to fix possible precission-related issues.
 * This 4.x fork build DOES NOT implement hard-coded logarithmic depth buffer.
 Waiting for reverse-z depth buffer to be implemented and pulled: https://github.com/godotengine/godot/pull/88328
 

@@ -1003,6 +1003,7 @@ void VisualShader::remove_node(Type p_type, int p_id) {
 				g->nodes[connection.to_node].node->set_input_port_connected(connection.to_port, false);
 			} else if (connection.to_node == p_id) {
 				g->nodes[connection.from_node].next_connected_nodes.erase(p_id);
+				g->nodes[connection.from_node].node->set_output_port_connected(connection.from_port, false);
 			}
 			g->connections.erase(E);
 		}
@@ -1861,7 +1862,7 @@ void VisualShader::_get_property_list(List<PropertyInfo> *p_list) const {
 	}
 
 	for (const KeyValue<String, Varying> &E : varyings) {
-		p_list->push_back(PropertyInfo(Variant::STRING, vformat("%s/%s", PNAME("varyings"), E.key)));
+		p_list->push_back(PropertyInfo(Variant::STRING, vformat("%s/%s", PNAME("varyings"), E.key), PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR));
 	}
 
 	for (int i = 0; i < TYPE_MAX; i++) {
@@ -2620,7 +2621,7 @@ void VisualShader::_update_shader() const {
 				default:
 					break;
 			}
-			global_code += E.key + ";\n";
+			global_code += vformat("var_%s;\n", E.key);
 		}
 
 		global_code += "\n";
@@ -2689,7 +2690,7 @@ void VisualShader::_update_shader() const {
 							default:
 								break;
 						}
-						varying_code += vformat("	%s = %s;\n", E.key, code2);
+						varying_code += vformat("	var_%s = %s;\n", E.key, code2);
 					}
 					is_empty_func = false;
 				}
@@ -3897,6 +3898,7 @@ const VisualShaderNodeOutput::Port VisualShaderNodeOutput::ports[] = {
 	{ Shader::MODE_SPATIAL, VisualShader::TYPE_VERTEX, VisualShaderNode::PORT_TYPE_SCALAR, "Roughness", "ROUGHNESS" },
 	{ Shader::MODE_SPATIAL, VisualShader::TYPE_VERTEX, VisualShaderNode::PORT_TYPE_SCALAR, "Point Size", "POINT_SIZE" },
 	{ Shader::MODE_SPATIAL, VisualShader::TYPE_VERTEX, VisualShaderNode::PORT_TYPE_TRANSFORM, "Model View Matrix", "MODELVIEW_MATRIX" },
+	{ Shader::MODE_SPATIAL, VisualShader::TYPE_VERTEX, VisualShaderNode::PORT_TYPE_TRANSFORM, "Projection Matrix", "PROJECTION_MATRIX" },
 	////////////////////////////////////////////////////////////////////////
 	// Node3D, Fragment.
 	////////////////////////////////////////////////////////////////////////
@@ -3961,6 +3963,7 @@ const VisualShaderNodeOutput::Port VisualShaderNodeOutput::ports[] = {
 	////////////////////////////////////////////////////////////////////////
 	{ Shader::MODE_CANVAS_ITEM, VisualShader::TYPE_LIGHT, VisualShaderNode::PORT_TYPE_VECTOR_3D, "Light", "LIGHT.rgb" },
 	{ Shader::MODE_CANVAS_ITEM, VisualShader::TYPE_LIGHT, VisualShaderNode::PORT_TYPE_SCALAR, "Light Alpha", "LIGHT.a" },
+	{ Shader::MODE_CANVAS_ITEM, VisualShader::TYPE_LIGHT, VisualShaderNode::PORT_TYPE_VECTOR_3D, "Shadow Modulate", "SHADOW_MODULATE.rgb" },
 
 	////////////////////////////////////////////////////////////////////////
 	// Sky, Sky.
@@ -5048,18 +5051,18 @@ VisualShaderNodeGlobalExpression::VisualShaderNodeGlobalExpression() {
 
 ////////////// Varying
 
-List<VisualShaderNodeVarying::Varying> varyings;
+RBMap<RID, List<VisualShaderNodeVarying::Varying>> varyings;
 
-void VisualShaderNodeVarying::add_varying(const String &p_name, VisualShader::VaryingMode p_mode, VisualShader::VaryingType p_type) { // static
-	varyings.push_back({ p_name, p_mode, p_type });
+void VisualShaderNodeVarying::add_varying(RID p_shader_rid, const String &p_name, VisualShader::VaryingMode p_mode, VisualShader::VaryingType p_type) { // static
+	varyings[p_shader_rid].push_back({ p_name, p_mode, p_type });
 }
 
-void VisualShaderNodeVarying::clear_varyings() { // static
-	varyings.clear();
+void VisualShaderNodeVarying::clear_varyings(RID p_shader_rid) { // static
+	varyings[p_shader_rid].clear();
 }
 
-bool VisualShaderNodeVarying::has_varying(const String &p_name) { // static
-	for (const VisualShaderNodeVarying::Varying &E : varyings) {
+bool VisualShaderNodeVarying::has_varying(RID p_shader_rid, const String &p_name) { // static
+	for (const VisualShaderNodeVarying::Varying &E : varyings[p_shader_rid]) {
 		if (E.name == p_name) {
 			return true;
 		}
@@ -5067,19 +5070,23 @@ bool VisualShaderNodeVarying::has_varying(const String &p_name) { // static
 	return false;
 }
 
+void VisualShaderNodeVarying::set_shader_rid(const RID &p_shader_rid) {
+	shader_rid = p_shader_rid;
+}
+
 int VisualShaderNodeVarying::get_varyings_count() const {
-	return varyings.size();
+	return varyings[shader_rid].size();
 }
 
 String VisualShaderNodeVarying::get_varying_name_by_index(int p_idx) const {
-	if (p_idx >= 0 && p_idx < varyings.size()) {
-		return varyings.get(p_idx).name;
+	if (p_idx >= 0 && p_idx < varyings[shader_rid].size()) {
+		return varyings[shader_rid].get(p_idx).name;
 	}
 	return "";
 }
 
 VisualShader::VaryingType VisualShaderNodeVarying::get_varying_type_by_name(const String &p_name) const {
-	for (const VisualShaderNodeVarying::Varying &varying : varyings) {
+	for (const VisualShaderNodeVarying::Varying &varying : varyings[shader_rid]) {
 		if (varying.name == p_name) {
 			return varying.type;
 		}
@@ -5088,14 +5095,14 @@ VisualShader::VaryingType VisualShaderNodeVarying::get_varying_type_by_name(cons
 }
 
 VisualShader::VaryingType VisualShaderNodeVarying::get_varying_type_by_index(int p_idx) const {
-	if (p_idx >= 0 && p_idx < varyings.size()) {
-		return varyings.get(p_idx).type;
+	if (p_idx >= 0 && p_idx < varyings[shader_rid].size()) {
+		return varyings[shader_rid].get(p_idx).type;
 	}
 	return VisualShader::VARYING_TYPE_FLOAT;
 }
 
 VisualShader::VaryingMode VisualShaderNodeVarying::get_varying_mode_by_name(const String &p_name) const {
-	for (const VisualShaderNodeVarying::Varying &varying : varyings) {
+	for (const VisualShaderNodeVarying::Varying &varying : varyings[shader_rid]) {
 		if (varying.name == p_name) {
 			return varying.mode;
 		}
@@ -5104,15 +5111,15 @@ VisualShader::VaryingMode VisualShaderNodeVarying::get_varying_mode_by_name(cons
 }
 
 VisualShader::VaryingMode VisualShaderNodeVarying::get_varying_mode_by_index(int p_idx) const {
-	if (p_idx >= 0 && p_idx < varyings.size()) {
-		return varyings.get(p_idx).mode;
+	if (p_idx >= 0 && p_idx < varyings[shader_rid].size()) {
+		return varyings[shader_rid].get(p_idx).mode;
 	}
 	return VisualShader::VARYING_MODE_VERTEX_TO_FRAG_LIGHT;
 }
 
 VisualShaderNodeVarying::PortType VisualShaderNodeVarying::get_port_type_by_index(int p_idx) const {
-	if (p_idx >= 0 && p_idx < varyings.size()) {
-		return get_port_type(varyings.get(p_idx).type, 0);
+	if (p_idx >= 0 && p_idx < varyings[shader_rid].size()) {
+		return get_port_type(varyings[shader_rid].get(p_idx).type, 0);
 	}
 	return PORT_TYPE_SCALAR;
 }
@@ -5239,7 +5246,7 @@ String VisualShaderNodeVaryingSetter::generate_code(Shader::Mode p_mode, VisualS
 	if (varying_name == "[None]") {
 		return code;
 	}
-	code += vformat("	%s = %s;\n", varying_name, p_input_vars[0]);
+	code += vformat("	var_%s = %s;\n", varying_name, p_input_vars[0]);
 	return code;
 }
 
@@ -5284,7 +5291,7 @@ String VisualShaderNodeVaryingGetter::generate_code(Shader::Mode p_mode, VisualS
 	String from = varying_name;
 	String from2;
 
-	if (varying_name == "[None]") {
+	if (varying_name == "[None]" || p_for_preview) {
 		switch (varying_type) {
 			case VisualShader::VARYING_TYPE_FLOAT:
 				from = "0.0";
@@ -5313,8 +5320,9 @@ String VisualShaderNodeVaryingGetter::generate_code(Shader::Mode p_mode, VisualS
 			default:
 				break;
 		}
+		return vformat("	%s = %s;\n", p_output_vars[0], from);
 	}
-	return vformat("	%s = %s;\n", p_output_vars[0], from);
+	return vformat("	%s = var_%s;\n", p_output_vars[0], from);
 }
 
 VisualShaderNodeVaryingGetter::VisualShaderNodeVaryingGetter() {

@@ -455,6 +455,7 @@ public:
 	void track_set_interpolation_type(int p_track, InterpolationType p_interp);
 	InterpolationType track_get_interpolation_type(int p_track) const;
 
+	Array make_default_bezier_key(float p_value);
 	int bezier_track_insert_key(int p_track, double p_time, real_t p_value, const Vector2 &p_in_handle, const Vector2 &p_out_handle);
 	void bezier_track_set_key_value(int p_track, int p_index, real_t p_value);
 	void bezier_track_set_key_in_handle(int p_track, int p_index, const Vector2 &p_handle, real_t p_balanced_value_time_ratio = 1.0);
@@ -525,6 +526,22 @@ public:
 	static Variant blend_variant(const Variant &a, const Variant &b, float c);
 	static Variant interpolate_variant(const Variant &a, const Variant &b, float c, bool p_snap_array_element = false);
 	static Variant cubic_interpolate_in_time_variant(const Variant &pre_a, const Variant &a, const Variant &b, const Variant &post_b, float c, real_t p_pre_a_t, real_t p_b_t, real_t p_post_b_t, bool p_snap_array_element = false);
+
+	static bool is_less_or_equal_approx(double a, double b) {
+		return a < b || Math::is_equal_approx(a, b);
+	}
+
+	static bool is_less_approx(double a, double b) {
+		return a < b && !Math::is_equal_approx(a, b);
+	}
+
+	static bool is_greater_or_equal_approx(double a, double b) {
+		return a > b || Math::is_equal_approx(a, b);
+	}
+
+	static bool is_greater_approx(double a, double b) {
+		return a > b && !Math::is_equal_approx(a, b);
+	}
 
 	static TrackType get_cache_type(TrackType p_type);
 
