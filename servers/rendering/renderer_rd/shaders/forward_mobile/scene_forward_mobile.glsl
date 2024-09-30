@@ -76,6 +76,10 @@ void axis_angle_to_tbn(vec3 axis, float angle, out vec3 tangent, out vec3 binorm
 	normal = omc_axis.zzz * axis + vec3(-s_axis.y, s_axis.x, c);
 }
 
+/* Spec Constants */
+
+layout(constant_id = 17) const bool sc_is_multimesh = false;
+
 /* Varyings */
 
 layout(location = 0) highp out vec3 vertex_interp;
@@ -178,8 +182,6 @@ void main() {
 	color_interp = color_attrib;
 #endif
 
-	bool is_multimesh = bool(instances.data[draw_call.instance_index].flags & INSTANCE_FLAGS_MULTIMESH);
-
 	mat4 model_matrix = instances.data[draw_call.instance_index].transform;
 	mat4 inv_view_matrix = scene_data.inv_view_matrix;
 #ifdef USE_DOUBLE_PRECISION
@@ -203,7 +205,7 @@ void main() {
 	mat4 matrix;
 	mat4 read_model_matrix = model_matrix;
 
-	if (is_multimesh) {
+	if (sc_is_multimesh) {
 		//multimesh, instances are for it
 
 #ifdef USE_PARTICLE_TRAILS
@@ -350,7 +352,7 @@ void main() {
 	}
 
 #ifdef OVERRIDE_POSITION
-	vec4 position;
+	vec4 position = vec4(1.0);
 #endif
 
 #ifdef USE_MULTIVIEW
@@ -399,7 +401,7 @@ void main() {
 	// Then we combine the translations from the model matrix and the view matrix using emulated doubles.
 	// We add the result to the vertex and ignore the final lost precision.
 	vec3 model_origin = model_matrix[3].xyz;
-	if (is_multimesh) {
+	if (sc_is_multimesh) {
 		vertex = mat3(matrix) * vertex;
 		model_origin = double_add_vec3(model_origin, model_precision, matrix[3].xyz, vec3(0.0), model_precision);
 	}
@@ -837,6 +839,13 @@ void main() {
 	vec3 light_vertex = vertex;
 #endif //LIGHT_VERTEX_USED
 
+	mat3 model_normal_matrix;
+	if (bool(instances.data[draw_call.instance_index].flags & INSTANCE_FLAGS_NON_UNIFORM_SCALE)) {
+		model_normal_matrix = transpose(inverse(mat3(read_model_matrix)));
+	} else {
+		model_normal_matrix = mat3(read_model_matrix);
+	}
+
 	mat4 read_view_matrix = scene_data.view_matrix;
 	vec2 read_viewport_size = scene_data.viewport_size;
 
@@ -1205,17 +1214,10 @@ void main() {
 			vec3 n = normalize(lightmaps.data[ofs].normal_xform * normal);
 			float exposure_normalization = lightmaps.data[ofs].exposure_normalization;
 
-			ambient_light += lm_light_l0 * 0.282095f;
-			ambient_light += lm_light_l1n1 * 0.32573 * n.y * exposure_normalization;
-			ambient_light += lm_light_l1_0 * 0.32573 * n.z * exposure_normalization;
-			ambient_light += lm_light_l1p1 * 0.32573 * n.x * exposure_normalization;
-			if (metallic > 0.01) { // since the more direct bounced light is lost, we can kind of fake it with this trick
-				vec3 r = reflect(normalize(-vertex), normal);
-				specular_light += lm_light_l1n1 * 0.32573 * r.y * exposure_normalization;
-				specular_light += lm_light_l1_0 * 0.32573 * r.z * exposure_normalization;
-				specular_light += lm_light_l1p1 * 0.32573 * r.x * exposure_normalization;
-			}
-
+			ambient_light += lm_light_l0 * exposure_normalization;
+			ambient_light += lm_light_l1n1 * n.y * exposure_normalization;
+			ambient_light += lm_light_l1_0 * n.z * exposure_normalization;
+			ambient_light += lm_light_l1p1 * n.x * exposure_normalization;
 		} else {
 			ambient_light += textureLod(sampler2DArray(lightmap_textures[ofs], SAMPLER_LINEAR_CLAMP), uvw, 0.0).rgb * lightmaps.data[ofs].exposure_normalization;
 		}
@@ -1763,7 +1765,7 @@ void main() {
 	alpha = min(alpha, clamp(length(ambient_light), 0.0, 1.0));
 
 #if defined(ALPHA_SCISSOR_USED)
-	if (alpha < alpha_scissor) {
+	if (alpha < alpha_scissor_threshold) {
 		discard;
 	}
 #endif // !ALPHA_SCISSOR_USED

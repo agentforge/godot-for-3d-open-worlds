@@ -290,7 +290,9 @@ void EditorExportPlatformAndroid::_check_for_changes_poll_thread(void *ud) {
 
 		// Check for devices updates
 		String adb = get_adb_path();
-		if (ea->has_runnable_preset.is_set() && FileAccess::exists(adb)) {
+		// adb.exe was locking the editor_doc_cache file on startup. Adding a check for is_editor_ready provides just enough time
+		// to regenerate the doc cache.
+		if (ea->has_runnable_preset.is_set() && FileAccess::exists(adb) && EditorNode::get_singleton()->is_editor_ready()) {
 			String devices;
 			List<String> args;
 			args.push_back("devices");
@@ -441,6 +443,7 @@ void EditorExportPlatformAndroid::_update_preset_status() {
 	} else {
 		has_runnable_preset.clear();
 	}
+	devices_changed.set();
 }
 #endif
 
@@ -1920,7 +1923,7 @@ bool EditorExportPlatformAndroid::get_export_option_visibility(const EditorExpor
 	}
 	if (p_option == "custom_template/debug" || p_option == "custom_template/release") {
 		// The APK templates are ignored if Gradle build is enabled.
-		return advanced_options_enabled && !bool(p_preset->get("gradle_build/use_gradle_build"));
+		return !bool(p_preset->get("gradle_build/use_gradle_build"));
 	}
 
 	// Hide .NET embedding option (always enabled).
@@ -2271,6 +2274,11 @@ String EditorExportPlatformAndroid::get_apksigner_path(int p_target_sdk, bool p_
 	bool failed = false;
 	String version_to_use;
 
+	String java_sdk_path = EDITOR_GET("export/android/java_sdk_path");
+	if (!java_sdk_path.is_empty()) {
+		OS::get_singleton()->set_environment("JAVA_HOME", java_sdk_path);
+	}
+
 	List<String> args;
 	args.push_back("--version");
 	String output;
@@ -2322,7 +2330,8 @@ static bool has_valid_keystore_credentials(String &r_error_str, const String &p_
 	args.push_back(p_password);
 	args.push_back("-alias");
 	args.push_back(p_username);
-	Error error = OS::get_singleton()->execute("keytool", args, &output, nullptr, true);
+	String keytool_path = EditorExportPlatformAndroid::get_keytool_path();
+	Error error = OS::get_singleton()->execute(keytool_path, args, &output, nullptr, true);
 	String keytool_error = "keytool error:";
 	bool valid = output.substr(0, keytool_error.length()) != keytool_error;
 

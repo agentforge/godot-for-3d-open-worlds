@@ -398,6 +398,13 @@ void SceneTreeEditor::_add_nodes(Node *p_node, TreeItem *p_parent) {
 			item->set_button_color(0, item->get_button_count(0) - 1, button_color);
 		}
 
+		if (p_node->has_meta("_edit_lock_")) {
+			item->add_button(0, get_editor_theme_icon(SNAME("Lock")), BUTTON_LOCK, false, TTR("Node is locked.\nClick to unlock it."));
+		}
+		if (p_node->has_meta("_edit_group_")) {
+			item->add_button(0, get_editor_theme_icon(SNAME("Group")), BUTTON_GROUP, false, TTR("Children are not selectable.\nClick to make them selectable."));
+		}
+
 		if (p_node->has_method("is_visible") && p_node->has_method("set_visible") && p_node->has_signal(SceneStringName(visibility_changed))) {
 			bool is_visible = p_node->call("is_visible");
 			if (is_visible) {
@@ -410,13 +417,6 @@ void SceneTreeEditor::_add_nodes(Node *p_node, TreeItem *p_parent) {
 				p_node->connect(SceneStringName(visibility_changed), vis_changed.bind(p_node));
 			}
 			_update_visibility_color(p_node, item);
-		}
-
-		if (p_node->has_meta("_edit_lock_")) {
-			item->add_button(0, get_editor_theme_icon(SNAME("Lock")), BUTTON_LOCK, false, TTR("Node is locked.\nClick to unlock it."));
-		}
-		if (p_node->has_meta("_edit_group_")) {
-			item->add_button(0, get_editor_theme_icon(SNAME("Group")), BUTTON_GROUP, false, TTR("Children are not selectable.\nClick to make them selectable."));
 		}
 
 		if (p_node->is_class("AnimationMixer")) {
@@ -490,10 +490,14 @@ void SceneTreeEditor::_update_node_tooltip(Node *p_node, TreeItem *p_item) {
 	String tooltip = p_node->get_name();
 
 	if (p_node == get_scene_node() && p_node->get_scene_inherited_state().is_valid()) {
-		p_item->add_button(0, get_editor_theme_icon(SNAME("InstanceOptions")), BUTTON_SUBSCENE, false, TTR("Open in Editor"));
+		if (p_item->get_button_by_id(0, BUTTON_SUBSCENE) == -1) {
+			p_item->add_button(0, get_editor_theme_icon(SNAME("InstanceOptions")), BUTTON_SUBSCENE, false, TTR("Open in Editor"));
+		}
 		tooltip += String("\n" + TTR("Inherits:") + " " + p_node->get_scene_inherited_state()->get_path());
 	} else if (p_node != get_scene_node() && !p_node->get_scene_file_path().is_empty() && can_open_instance) {
-		p_item->add_button(0, get_editor_theme_icon(SNAME("InstanceOptions")), BUTTON_SUBSCENE, false, TTR("Open in Editor"));
+		if (p_item->get_button_by_id(0, BUTTON_SUBSCENE) == -1) {
+			p_item->add_button(0, get_editor_theme_icon(SNAME("InstanceOptions")), BUTTON_SUBSCENE, false, TTR("Open in Editor"));
+		}
 		tooltip += String("\n" + TTR("Instance:") + " " + p_node->get_scene_file_path());
 	}
 
@@ -589,7 +593,6 @@ void SceneTreeEditor::_node_removed(Node *p_node) {
 
 	if (p_node == selected) {
 		selected = nullptr;
-		emit_signal(SNAME("node_selected"));
 	}
 }
 
@@ -1001,6 +1004,7 @@ void SceneTreeEditor::set_selected(Node *p_node, bool p_emit_selected) {
 	TreeItem *item = p_node ? _find(tree->get_root(), p_node->get_path()) : nullptr;
 
 	if (item) {
+		selected = p_node;
 		if (auto_expand_selected) {
 			// Make visible when it's collapsed.
 			TreeItem *node = item->get_parent();
@@ -1010,8 +1014,24 @@ void SceneTreeEditor::set_selected(Node *p_node, bool p_emit_selected) {
 			}
 			item->select(0);
 			item->set_as_cursor(0);
-			selected = p_node;
 			tree->ensure_cursor_is_visible();
+		} else {
+			// Ensure the node is selected and visible for the user if the node
+			// is not collapsed.
+			bool collapsed = false;
+			TreeItem *node = item;
+			while (node && node != tree->get_root()) {
+				if (node->is_collapsed()) {
+					collapsed = true;
+					break;
+				}
+				node = node->get_parent();
+			}
+			if (!collapsed) {
+				item->select(0);
+				item->set_as_cursor(0);
+				tree->ensure_cursor_is_visible();
+			}
 		}
 	} else {
 		if (!p_node) {
@@ -1690,7 +1710,7 @@ void SceneTreeDialog::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_ENTER_TREE: {
-			connect("confirmed", callable_mp(this, &SceneTreeDialog::_select));
+			connect(SceneStringName(confirmed), callable_mp(this, &SceneTreeDialog::_select));
 		} break;
 
 		case NOTIFICATION_THEME_CHANGED: {
@@ -1702,7 +1722,7 @@ void SceneTreeDialog::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_EXIT_TREE: {
-			disconnect("confirmed", callable_mp(this, &SceneTreeDialog::_select));
+			disconnect(SceneStringName(confirmed), callable_mp(this, &SceneTreeDialog::_select));
 		} break;
 	}
 }
@@ -1746,7 +1766,7 @@ SceneTreeDialog::SceneTreeDialog() {
 	filter->set_placeholder(TTR("Filter Nodes"));
 	filter->set_clear_button_enabled(true);
 	filter->add_theme_constant_override("minimum_character_width", 0);
-	filter->connect("text_changed", callable_mp(this, &SceneTreeDialog::_filter_changed));
+	filter->connect(SceneStringName(text_changed), callable_mp(this, &SceneTreeDialog::_filter_changed));
 	filter_hbc->add_child(filter);
 
 	// Add 'Show All' button to HBoxContainer next to the filter, visible only when valid_types is defined.

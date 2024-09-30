@@ -300,7 +300,7 @@ int AudioStreamPlaybackWAV::mix(AudioFrame *p_buffer, float p_rate_scale, int p_
 	int64_t loop_end_fp = ((int64_t)base->loop_end << MIX_FRAC_BITS);
 	int64_t length_fp = ((int64_t)len << MIX_FRAC_BITS);
 	int64_t begin_limit = (base->loop_mode != AudioStreamWAV::LOOP_DISABLED) ? loop_begin_fp : 0;
-	int64_t end_limit = (base->loop_mode != AudioStreamWAV::LOOP_DISABLED) ? loop_end_fp : length_fp;
+	int64_t end_limit = (base->loop_mode != AudioStreamWAV::LOOP_DISABLED) ? loop_end_fp : length_fp - MIX_FRAC_LEN;
 	bool is_stereo = base->stereo;
 
 	int32_t todo = p_frames;
@@ -463,6 +463,25 @@ int AudioStreamPlaybackWAV::mix(AudioFrame *p_buffer, float p_rate_scale, int p_
 
 void AudioStreamPlaybackWAV::tag_used_streams() {
 	base->tag_used(get_playback_position());
+}
+
+void AudioStreamPlaybackWAV::set_is_sample(bool p_is_sample) {
+	_is_sample = p_is_sample;
+}
+
+bool AudioStreamPlaybackWAV::get_is_sample() const {
+	return _is_sample;
+}
+
+Ref<AudioSamplePlayback> AudioStreamPlaybackWAV::get_sample_playback() const {
+	return sample_playback;
+}
+
+void AudioStreamPlaybackWAV::set_sample_playback(const Ref<AudioSamplePlayback> &p_playback) {
+	sample_playback = p_playback;
+	if (sample_playback.is_valid()) {
+		sample_playback->stream_playback = Ref<AudioStreamPlayback>(this);
+	}
 }
 
 AudioStreamPlaybackWAV::AudioStreamPlaybackWAV() {}
@@ -694,6 +713,33 @@ Ref<AudioStreamPlayback> AudioStreamWAV::instantiate_playback() {
 
 String AudioStreamWAV::get_stream_name() const {
 	return "";
+}
+
+Ref<AudioSample> AudioStreamWAV::generate_sample() const {
+	Ref<AudioSample> sample;
+	sample.instantiate();
+	sample->stream = this;
+	switch (loop_mode) {
+		case AudioStreamWAV::LoopMode::LOOP_DISABLED: {
+			sample->loop_mode = AudioSample::LoopMode::LOOP_DISABLED;
+		} break;
+
+		case AudioStreamWAV::LoopMode::LOOP_FORWARD: {
+			sample->loop_mode = AudioSample::LoopMode::LOOP_FORWARD;
+		} break;
+
+		case AudioStreamWAV::LoopMode::LOOP_PINGPONG: {
+			sample->loop_mode = AudioSample::LoopMode::LOOP_PINGPONG;
+		} break;
+
+		case AudioStreamWAV::LoopMode::LOOP_BACKWARD: {
+			sample->loop_mode = AudioSample::LoopMode::LOOP_BACKWARD;
+		} break;
+	}
+	sample->loop_begin = loop_begin;
+	sample->loop_end = loop_end;
+	sample->sample_rate = mix_rate;
+	return sample;
 }
 
 void AudioStreamWAV::_bind_methods() {

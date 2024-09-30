@@ -38,6 +38,7 @@
 #include "core/version.h"
 #include "drivers/png/png_driver_common.h"
 #include "main/main.h"
+#include "scene/resources/texture.h"
 
 #if defined(VULKAN_ENABLED)
 #include "rendering_context_driver_vulkan_windows.h"
@@ -132,9 +133,17 @@ String DisplayServerWindows::get_name() const {
 }
 
 void DisplayServerWindows::_set_mouse_mode_impl(MouseMode p_mode) {
+	if (p_mode == MOUSE_MODE_HIDDEN || p_mode == MOUSE_MODE_CAPTURED || p_mode == MOUSE_MODE_CONFINED_HIDDEN) {
+		// Hide cursor before moving.
+		if (hCursor == nullptr) {
+			hCursor = SetCursor(nullptr);
+		} else {
+			SetCursor(nullptr);
+		}
+	}
+
 	if (windows.has(MAIN_WINDOW_ID) && (p_mode == MOUSE_MODE_CAPTURED || p_mode == MOUSE_MODE_CONFINED || p_mode == MOUSE_MODE_CONFINED_HIDDEN)) {
 		// Mouse is grabbed (captured or confined).
-
 		WindowID window_id = _get_focused_window_or_popup();
 		if (!windows.has(window_id)) {
 			window_id = MAIN_WINDOW_ID;
@@ -164,13 +173,8 @@ void DisplayServerWindows::_set_mouse_mode_impl(MouseMode p_mode) {
 		_register_raw_input_devices(INVALID_WINDOW_ID);
 	}
 
-	if (p_mode == MOUSE_MODE_HIDDEN || p_mode == MOUSE_MODE_CAPTURED || p_mode == MOUSE_MODE_CONFINED_HIDDEN) {
-		if (hCursor == nullptr) {
-			hCursor = SetCursor(nullptr);
-		} else {
-			SetCursor(nullptr);
-		}
-	} else {
+	if (p_mode == MOUSE_MODE_VISIBLE || p_mode == MOUSE_MODE_CONFINED) {
+		// Show cursor.
 		CursorShape c = cursor_shape;
 		cursor_shape = CURSOR_MAX;
 		cursor_set_shape(c);
@@ -247,6 +251,14 @@ void DisplayServerWindows::tts_resume() {
 void DisplayServerWindows::tts_stop() {
 	ERR_FAIL_NULL_MSG(tts, "Enable the \"audio/general/text_to_speech\" project setting to use text-to-speech.");
 	tts->stop();
+}
+
+Error DisplayServerWindows::file_dialog_show(const String &p_title, const String &p_current_directory, const String &p_filename, bool p_show_hidden, FileDialogMode p_mode, const Vector<String> &p_filters, const Callable &p_callback) {
+	return _file_dialog_with_options_show(p_title, p_current_directory, String(), p_filename, p_show_hidden, p_mode, p_filters, TypedArray<Dictionary>(), p_callback, false);
+}
+
+Error DisplayServerWindows::file_dialog_with_options_show(const String &p_title, const String &p_current_directory, const String &p_root, const String &p_filename, bool p_show_hidden, FileDialogMode p_mode, const Vector<String> &p_filters, const TypedArray<Dictionary> &p_options, const Callable &p_callback) {
+	return _file_dialog_with_options_show(p_title, p_current_directory, p_root, p_filename, p_show_hidden, p_mode, p_filters, p_options, p_callback, true);
 }
 
 // Silence warning due to a COM API weirdness.
@@ -376,22 +388,85 @@ public:
 #pragma GCC diagnostic pop
 #endif
 
-Error DisplayServerWindows::file_dialog_show(const String &p_title, const String &p_current_directory, const String &p_filename, bool p_show_hidden, FileDialogMode p_mode, const Vector<String> &p_filters, const Callable &p_callback) {
-	return _file_dialog_with_options_show(p_title, p_current_directory, String(), p_filename, p_show_hidden, p_mode, p_filters, TypedArray<Dictionary>(), p_callback, false);
+LRESULT CALLBACK WndProcFileDialog(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+	DisplayServerWindows *ds_win = static_cast<DisplayServerWindows *>(DisplayServer::get_singleton());
+	if (ds_win) {
+		return ds_win->WndProcFileDialog(hWnd, uMsg, wParam, lParam);
+	} else {
+		return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+	}
 }
 
-Error DisplayServerWindows::file_dialog_with_options_show(const String &p_title, const String &p_current_directory, const String &p_root, const String &p_filename, bool p_show_hidden, FileDialogMode p_mode, const Vector<String> &p_filters, const TypedArray<Dictionary> &p_options, const Callable &p_callback) {
-	return _file_dialog_with_options_show(p_title, p_current_directory, p_root, p_filename, p_show_hidden, p_mode, p_filters, p_options, p_callback, true);
+LRESULT DisplayServerWindows::WndProcFileDialog(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+	MutexLock lock(file_dialog_mutex);
+	if (file_dialog_wnd.has(hWnd)) {
+		if (file_dialog_wnd[hWnd]->close_requested.is_set()) {
+			IPropertyStore *prop_store;
+			HRESULT hr = SHGetPropertyStoreForWindow(hWnd, IID_IPropertyStore, (void **)&prop_store);
+			if (hr == S_OK) {
+				PROPVARIANT val;
+				PropVariantInit(&val);
+				prop_store->SetValue(PKEY_AppUserModel_ID, val);
+				prop_store->Release();
+			}
+			DestroyWindow(hWnd);
+			file_dialog_wnd.erase(hWnd);
+		}
+	}
+	return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 }
 
-Error DisplayServerWindows::_file_dialog_with_options_show(const String &p_title, const String &p_current_directory, const String &p_root, const String &p_filename, bool p_show_hidden, FileDialogMode p_mode, const Vector<String> &p_filters, const TypedArray<Dictionary> &p_options, const Callable &p_callback, bool p_options_in_cb) {
-	_THREAD_SAFE_METHOD_
+void DisplayServerWindows::_thread_fd_monitor(void *p_ud) {
+	DisplayServerWindows *ds = static_cast<DisplayServerWindows *>(get_singleton());
+	FileDialogData *fd = (FileDialogData *)p_ud;
 
-	ERR_FAIL_INDEX_V(int(p_mode), FILE_DIALOG_MODE_SAVE_MAX, FAILED);
+	if (fd->mode < 0 && fd->mode >= DisplayServer::FILE_DIALOG_MODE_SAVE_MAX) {
+		fd->finished.set();
+		return;
+	}
+	CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+	int64_t x = fd->wrect.position.x;
+	int64_t y = fd->wrect.position.y;
+	int64_t w = fd->wrect.size.x;
+	int64_t h = fd->wrect.size.y;
+
+	WNDCLASSW wc = {};
+	wc.lpfnWndProc = (WNDPROC)::WndProcFileDialog;
+	wc.hInstance = GetModuleHandle(nullptr);
+	wc.lpszClassName = L"Engine File Dialog";
+	RegisterClassW(&wc);
+
+	HWND hwnd_dialog = CreateWindowExW(WS_EX_APPWINDOW, L"Engine File Dialog", L"", WS_OVERLAPPEDWINDOW, x, y, w, h, nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
+	if (hwnd_dialog) {
+		{
+			MutexLock lock(ds->file_dialog_mutex);
+			ds->file_dialog_wnd[hwnd_dialog] = fd;
+		}
+
+		HICON mainwindow_icon = (HICON)SendMessage(fd->hwnd_owner, WM_GETICON, ICON_SMALL, 0);
+		if (mainwindow_icon) {
+			SendMessage(hwnd_dialog, WM_SETICON, ICON_SMALL, (LPARAM)mainwindow_icon);
+		}
+		mainwindow_icon = (HICON)SendMessage(fd->hwnd_owner, WM_GETICON, ICON_BIG, 0);
+		if (mainwindow_icon) {
+			SendMessage(hwnd_dialog, WM_SETICON, ICON_BIG, (LPARAM)mainwindow_icon);
+		}
+		IPropertyStore *prop_store;
+		HRESULT hr = SHGetPropertyStoreForWindow(hwnd_dialog, IID_IPropertyStore, (void **)&prop_store);
+		if (hr == S_OK) {
+			PROPVARIANT val;
+			InitPropVariantFromString((PCWSTR)fd->appid.utf16().get_data(), &val);
+			prop_store->SetValue(PKEY_AppUserModel_ID, val);
+			prop_store->Release();
+		}
+	}
+
+	SetCurrentProcessExplicitAppUserModelID((PCWSTR)fd->appid.utf16().get_data());
 
 	Vector<Char16String> filter_names;
 	Vector<Char16String> filter_exts;
-	for (const String &E : p_filters) {
+	for (const String &E : fd->filters) {
 		Vector<String> tokens = E.split(";");
 		if (tokens.size() >= 1) {
 			String flt = tokens[0].strip_edges();
@@ -424,11 +499,9 @@ Error DisplayServerWindows::_file_dialog_with_options_show(const String &p_title
 		filters.push_back({ (LPCWSTR)filter_names[i].ptr(), (LPCWSTR)filter_exts[i].ptr() });
 	}
 
-	WindowID prev_focus = last_focused_window;
-
 	HRESULT hr = S_OK;
 	IFileDialog *pfd = nullptr;
-	if (p_mode == FILE_DIALOG_MODE_SAVE_FILE) {
+	if (fd->mode == DisplayServer::FILE_DIALOG_MODE_SAVE_FILE) {
 		hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_IFileSaveDialog, (void **)&pfd);
 	} else {
 		hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_IFileOpenDialog, (void **)&pfd);
@@ -444,40 +517,32 @@ Error DisplayServerWindows::_file_dialog_with_options_show(const String &p_title
 		IFileDialogCustomize *pfdc = nullptr;
 		hr = pfd->QueryInterface(IID_PPV_ARGS(&pfdc));
 
-		for (int i = 0; i < p_options.size(); i++) {
-			const Dictionary &item = p_options[i];
+		for (int i = 0; i < fd->options.size(); i++) {
+			const Dictionary &item = fd->options[i];
 			if (!item.has("name") || !item.has("values") || !item.has("default")) {
 				continue;
 			}
-			const String &name = item["name"];
-			const Vector<String> &options = item["values"];
-			int default_idx = item["default"];
-
-			event_handler->add_option(pfdc, name, options, default_idx);
+			event_handler->add_option(pfdc, item["name"], item["values"], item["default"]);
 		}
-		event_handler->set_root(p_root);
+		event_handler->set_root(fd->root);
 
 		pfdc->Release();
 
 		DWORD flags;
 		pfd->GetOptions(&flags);
-		if (p_mode == FILE_DIALOG_MODE_OPEN_FILES) {
+		if (fd->mode == DisplayServer::FILE_DIALOG_MODE_OPEN_FILES) {
 			flags |= FOS_ALLOWMULTISELECT;
 		}
-		if (p_mode == FILE_DIALOG_MODE_OPEN_DIR) {
+		if (fd->mode == DisplayServer::FILE_DIALOG_MODE_OPEN_DIR) {
 			flags |= FOS_PICKFOLDERS;
 		}
-		if (p_show_hidden) {
+		if (fd->show_hidden) {
 			flags |= FOS_FORCESHOWHIDDEN;
 		}
 		pfd->SetOptions(flags | FOS_FORCEFILESYSTEM);
-		pfd->SetTitle((LPCWSTR)p_title.utf16().ptr());
+		pfd->SetTitle((LPCWSTR)fd->title.utf16().ptr());
 
-		String dir = ProjectSettings::get_singleton()->globalize_path(p_current_directory);
-		if (dir == ".") {
-			dir = OS::get_singleton()->get_executable_path().get_base_dir();
-		}
-		dir = dir.replace("/", "\\");
+		String dir = fd->current_directory.replace("/", "\\");
 
 		IShellItem *shellitem = nullptr;
 		hr = SHCreateItemFromParsingName((LPCWSTR)dir.utf16().ptr(), nullptr, IID_IShellItem, (void **)&shellitem);
@@ -486,16 +551,11 @@ Error DisplayServerWindows::_file_dialog_with_options_show(const String &p_title
 			pfd->SetFolder(shellitem);
 		}
 
-		pfd->SetFileName((LPCWSTR)p_filename.utf16().ptr());
+		pfd->SetFileName((LPCWSTR)fd->filename.utf16().ptr());
 		pfd->SetFileTypes(filters.size(), filters.ptr());
 		pfd->SetFileTypeIndex(0);
 
-		WindowID window_id = _get_focused_window_or_popup();
-		if (!windows.has(window_id)) {
-			window_id = MAIN_WINDOW_ID;
-		}
-
-		hr = pfd->Show(windows[window_id].hWnd);
+		hr = pfd->Show(hwnd_dialog);
 		pfd->Unadvise(cookie);
 
 		Dictionary options = event_handler->get_selected();
@@ -512,7 +572,7 @@ Error DisplayServerWindows::_file_dialog_with_options_show(const String &p_title
 		if (SUCCEEDED(hr)) {
 			Vector<String> file_names;
 
-			if (p_mode == FILE_DIALOG_MODE_OPEN_FILES) {
+			if (fd->mode == DisplayServer::FILE_DIALOG_MODE_OPEN_FILES) {
 				IShellItemArray *results;
 				hr = static_cast<IFileOpenDialog *>(pfd)->GetResults(&results);
 				if (SUCCEEDED(hr)) {
@@ -545,72 +605,154 @@ Error DisplayServerWindows::_file_dialog_with_options_show(const String &p_title
 					result->Release();
 				}
 			}
-			if (p_callback.is_valid()) {
-				if (p_options_in_cb) {
-					Variant v_result = true;
-					Variant v_files = file_names;
-					Variant v_index = index;
-					Variant v_opt = options;
-					Variant ret;
-					Callable::CallError ce;
-					const Variant *args[4] = { &v_result, &v_files, &v_index, &v_opt };
-
-					p_callback.callp(args, 4, ret, ce);
-					if (ce.error != Callable::CallError::CALL_OK) {
-						ERR_PRINT(vformat("Failed to execute file dialogs callback: %s.", Variant::get_callable_error_text(p_callback, args, 4, ce)));
-					}
-				} else {
-					Variant v_result = true;
-					Variant v_files = file_names;
-					Variant v_index = index;
-					Variant ret;
-					Callable::CallError ce;
-					const Variant *args[3] = { &v_result, &v_files, &v_index };
-
-					p_callback.callp(args, 3, ret, ce);
-					if (ce.error != Callable::CallError::CALL_OK) {
-						ERR_PRINT(vformat("Failed to execute file dialogs callback: %s.", Variant::get_callable_error_text(p_callback, args, 3, ce)));
-					}
-				}
+			if (fd->callback.is_valid()) {
+				MutexLock lock(ds->file_dialog_mutex);
+				FileDialogCallback cb;
+				cb.callback = fd->callback;
+				cb.status = true;
+				cb.files = file_names;
+				cb.index = index;
+				cb.options = options;
+				cb.opt_in_cb = fd->options_in_cb;
+				ds->pending_cbs.push_back(cb);
 			}
 		} else {
-			if (p_callback.is_valid()) {
-				if (p_options_in_cb) {
-					Variant v_result = false;
-					Variant v_files = Vector<String>();
-					Variant v_index = index;
-					Variant v_opt = options;
-					Variant ret;
-					Callable::CallError ce;
-					const Variant *args[4] = { &v_result, &v_files, &v_index, &v_opt };
-
-					p_callback.callp(args, 4, ret, ce);
-					if (ce.error != Callable::CallError::CALL_OK) {
-						ERR_PRINT(vformat("Failed to execute file dialogs callback: %s.", Variant::get_callable_error_text(p_callback, args, 4, ce)));
-					}
-				} else {
-					Variant v_result = false;
-					Variant v_files = Vector<String>();
-					Variant v_index = index;
-					Variant ret;
-					Callable::CallError ce;
-					const Variant *args[3] = { &v_result, &v_files, &v_index };
-
-					p_callback.callp(args, 3, ret, ce);
-					if (ce.error != Callable::CallError::CALL_OK) {
-						ERR_PRINT(vformat("Failed to execute file dialogs callback: %s.", Variant::get_callable_error_text(p_callback, args, 3, ce)));
-					}
-				}
+			if (fd->callback.is_valid()) {
+				MutexLock lock(ds->file_dialog_mutex);
+				FileDialogCallback cb;
+				cb.callback = fd->callback;
+				cb.status = false;
+				cb.files = Vector<String>();
+				cb.index = index;
+				cb.options = options;
+				cb.opt_in_cb = fd->options_in_cb;
+				ds->pending_cbs.push_back(cb);
 			}
 		}
 		pfd->Release();
-		if (prev_focus != INVALID_WINDOW_ID) {
-			callable_mp(DisplayServer::get_singleton(), &DisplayServer::window_move_to_foreground).call_deferred(prev_focus);
-		}
-
-		return OK;
 	} else {
-		return ERR_CANT_OPEN;
+		if (fd->callback.is_valid()) {
+			MutexLock lock(ds->file_dialog_mutex);
+			FileDialogCallback cb;
+			cb.callback = fd->callback;
+			cb.status = false;
+			cb.files = Vector<String>();
+			cb.index = 0;
+			cb.options = Dictionary();
+			cb.opt_in_cb = fd->options_in_cb;
+			ds->pending_cbs.push_back(cb);
+		}
+	}
+	{
+		MutexLock lock(ds->file_dialog_mutex);
+		if (hwnd_dialog && ds->file_dialog_wnd.has(hwnd_dialog)) {
+			IPropertyStore *prop_store;
+			hr = SHGetPropertyStoreForWindow(hwnd_dialog, IID_IPropertyStore, (void **)&prop_store);
+			if (hr == S_OK) {
+				PROPVARIANT val;
+				PropVariantInit(&val);
+				prop_store->SetValue(PKEY_AppUserModel_ID, val);
+				prop_store->Release();
+			}
+			DestroyWindow(hwnd_dialog);
+			ds->file_dialog_wnd.erase(hwnd_dialog);
+		}
+	}
+	UnregisterClassW(L"Engine File Dialog", GetModuleHandle(nullptr));
+	CoUninitialize();
+
+	fd->finished.set();
+
+	if (fd->window_id != INVALID_WINDOW_ID) {
+		callable_mp(DisplayServer::get_singleton(), &DisplayServer::window_move_to_foreground).call_deferred(fd->window_id);
+	}
+}
+
+Error DisplayServerWindows::_file_dialog_with_options_show(const String &p_title, const String &p_current_directory, const String &p_root, const String &p_filename, bool p_show_hidden, FileDialogMode p_mode, const Vector<String> &p_filters, const TypedArray<Dictionary> &p_options, const Callable &p_callback, bool p_options_in_cb) {
+	_THREAD_SAFE_METHOD_
+
+	ERR_FAIL_INDEX_V(int(p_mode), FILE_DIALOG_MODE_SAVE_MAX, FAILED);
+
+	WindowID window_id = _get_focused_window_or_popup();
+	if (!windows.has(window_id)) {
+		window_id = MAIN_WINDOW_ID;
+	}
+	String appname;
+	if (Engine::get_singleton()->is_editor_hint()) {
+		appname = "Godot.GodotEditor." + String(VERSION_BRANCH);
+	} else {
+		String name = GLOBAL_GET("application/config/name");
+		String version = GLOBAL_GET("application/config/version");
+		if (version.is_empty()) {
+			version = "0";
+		}
+		String clean_app_name = name.to_pascal_case();
+		for (int i = 0; i < clean_app_name.length(); i++) {
+			if (!is_ascii_alphanumeric_char(clean_app_name[i]) && clean_app_name[i] != '_' && clean_app_name[i] != '.') {
+				clean_app_name[i] = '_';
+			}
+		}
+		clean_app_name = clean_app_name.substr(0, 120 - version.length()).trim_suffix(".");
+		appname = "Godot." + clean_app_name + "." + version;
+	}
+
+	FileDialogData *fd = memnew(FileDialogData);
+	if (window_id != INVALID_WINDOW_ID) {
+		fd->hwnd_owner = windows[window_id].hWnd;
+		RECT crect;
+		GetWindowRect(fd->hwnd_owner, &crect);
+		fd->wrect = Rect2i(crect.left, crect.top, crect.right - crect.left, crect.bottom - crect.top);
+	} else {
+		fd->hwnd_owner = 0;
+		fd->wrect = Rect2i(CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT);
+	}
+	fd->appid = appname;
+	fd->title = p_title;
+	fd->current_directory = p_current_directory;
+	fd->root = p_root;
+	fd->filename = p_filename;
+	fd->show_hidden = p_show_hidden;
+	fd->mode = p_mode;
+	fd->window_id = window_id;
+	fd->filters = p_filters;
+	fd->options = p_options;
+	fd->callback = p_callback;
+	fd->options_in_cb = p_options_in_cb;
+	fd->finished.clear();
+	fd->close_requested.clear();
+
+	fd->listener_thread.start(DisplayServerWindows::_thread_fd_monitor, fd);
+
+	file_dialogs.push_back(fd);
+
+	return OK;
+}
+
+void DisplayServerWindows::process_file_dialog_callbacks() {
+	MutexLock lock(file_dialog_mutex);
+	while (!pending_cbs.is_empty()) {
+		FileDialogCallback cb = pending_cbs.front()->get();
+		pending_cbs.pop_front();
+
+		if (cb.opt_in_cb) {
+			Variant ret;
+			Callable::CallError ce;
+			const Variant *args[4] = { &cb.status, &cb.files, &cb.index, &cb.options };
+
+			cb.callback.callp(args, 4, ret, ce);
+			if (ce.error != Callable::CallError::CALL_OK) {
+				ERR_PRINT(vformat("Failed to execute file dialog callback: %s.", Variant::get_callable_error_text(cb.callback, args, 4, ce)));
+			}
+		} else {
+			Variant ret;
+			Callable::CallError ce;
+			const Variant *args[3] = { &cb.status, &cb.files, &cb.index };
+
+			cb.callback.callp(args, 3, ret, ce);
+			if (ce.error != Callable::CallError::CALL_OK) {
+				ERR_PRINT(vformat("Failed to execute file dialog callback: %s.", Variant::get_callable_error_text(cb.callback, args, 3, ce)));
+			}
+		}
 	}
 }
 
@@ -1305,10 +1447,10 @@ DisplayServer::WindowID DisplayServerWindows::get_window_at_screen_position(cons
 	return INVALID_WINDOW_ID;
 }
 
-DisplayServer::WindowID DisplayServerWindows::create_sub_window(WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Rect2i &p_rect) {
+DisplayServer::WindowID DisplayServerWindows::create_sub_window(WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Rect2i &p_rect, bool p_exclusive, WindowID p_transient_parent) {
 	_THREAD_SAFE_METHOD_
 
-	WindowID window_id = _create_window(p_mode, p_vsync_mode, p_flags, p_rect);
+	WindowID window_id = _create_window(p_mode, p_vsync_mode, p_flags, p_rect, p_exclusive, p_transient_parent);
 	ERR_FAIL_COND_V_MSG(window_id == INVALID_WINDOW_ID, INVALID_WINDOW_ID, "Failed to create sub window.");
 
 	WindowData &wd = windows[window_id];
@@ -1332,13 +1474,15 @@ DisplayServer::WindowID DisplayServerWindows::create_sub_window(WindowMode p_mod
 		wd.is_popup = true;
 	}
 	if (p_flags & WINDOW_FLAG_TRANSPARENT_BIT) {
-		DWM_BLURBEHIND bb;
-		ZeroMemory(&bb, sizeof(bb));
-		HRGN hRgn = CreateRectRgn(0, 0, -1, -1);
-		bb.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
-		bb.hRgnBlur = hRgn;
-		bb.fEnable = TRUE;
-		DwmEnableBlurBehindWindow(wd.hWnd, &bb);
+		if (OS::get_singleton()->is_layered_allowed()) {
+			DWM_BLURBEHIND bb;
+			ZeroMemory(&bb, sizeof(bb));
+			HRGN hRgn = CreateRectRgn(0, 0, -1, -1);
+			bb.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
+			bb.hRgnBlur = hRgn;
+			bb.fEnable = TRUE;
+			DwmEnableBlurBehindWindow(wd.hWnd, &bb);
+		}
 
 		wd.layered_window = true;
 	}
@@ -2008,7 +2152,7 @@ void DisplayServerWindows::window_set_mode(WindowMode p_mode, WindowID p_window)
 	}
 
 	if (p_mode == WINDOW_MODE_WINDOWED) {
-		ShowWindow(wd.hWnd, SW_RESTORE);
+		ShowWindow(wd.hWnd, SW_NORMAL);
 		wd.maximized = false;
 		wd.minimized = false;
 	}
@@ -2118,28 +2262,29 @@ void DisplayServerWindows::window_set_flag(WindowFlags p_flag, bool p_enabled, W
 		} break;
 		case WINDOW_FLAG_TRANSPARENT: {
 			if (p_enabled) {
-				//enable per-pixel alpha
-
-				DWM_BLURBEHIND bb;
-				ZeroMemory(&bb, sizeof(bb));
-				HRGN hRgn = CreateRectRgn(0, 0, -1, -1);
-				bb.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
-				bb.hRgnBlur = hRgn;
-				bb.fEnable = TRUE;
-				DwmEnableBlurBehindWindow(wd.hWnd, &bb);
-
+				// Enable per-pixel alpha.
+				if (OS::get_singleton()->is_layered_allowed()) {
+					DWM_BLURBEHIND bb;
+					ZeroMemory(&bb, sizeof(bb));
+					HRGN hRgn = CreateRectRgn(0, 0, -1, -1);
+					bb.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
+					bb.hRgnBlur = hRgn;
+					bb.fEnable = TRUE;
+					DwmEnableBlurBehindWindow(wd.hWnd, &bb);
+				}
 				wd.layered_window = true;
 			} else {
-				//disable per-pixel alpha
+				// Disable per-pixel alpha.
 				wd.layered_window = false;
-
-				DWM_BLURBEHIND bb;
-				ZeroMemory(&bb, sizeof(bb));
-				HRGN hRgn = CreateRectRgn(0, 0, -1, -1);
-				bb.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
-				bb.hRgnBlur = hRgn;
-				bb.fEnable = FALSE;
-				DwmEnableBlurBehindWindow(wd.hWnd, &bb);
+				if (OS::get_singleton()->is_layered_allowed()) {
+					DWM_BLURBEHIND bb;
+					ZeroMemory(&bb, sizeof(bb));
+					HRGN hRgn = CreateRectRgn(0, 0, -1, -1);
+					bb.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
+					bb.hRgnBlur = hRgn;
+					bb.fEnable = FALSE;
+					DwmEnableBlurBehindWindow(wd.hWnd, &bb);
+				}
 			}
 		} break;
 		case WINDOW_FLAG_NO_FOCUS: {
@@ -2910,24 +3055,67 @@ Key DisplayServerWindows::keyboard_get_label_from_physical(Key p_keycode) const 
 	return p_keycode;
 }
 
-String _get_full_layout_name_from_registry(HKL p_layout) {
-	String id = "SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts\\" + String::num_int64((int64_t)p_layout, 16, false).lpad(8, "0");
+String DisplayServerWindows::_get_keyboard_layout_display_name(const String &p_klid) const {
+	String ret;
+	HKEY key;
+	if (RegOpenKeyW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts", &key) != ERROR_SUCCESS) {
+		return String();
+	}
+
+	WCHAR buffer[MAX_PATH] = {};
+	DWORD buffer_size = MAX_PATH;
+	if (RegGetValueW(key, (LPCWSTR)p_klid.utf16().get_data(), L"Layout Display Name", RRF_RT_REG_SZ, nullptr, buffer, &buffer_size) == ERROR_SUCCESS) {
+		if (load_indirect_string) {
+			if (load_indirect_string(buffer, buffer, buffer_size, nullptr) == S_OK) {
+				ret = String::utf16((const char16_t *)buffer, buffer_size);
+			}
+		}
+	} else {
+		if (RegGetValueW(key, (LPCWSTR)p_klid.utf16().get_data(), L"Layout Text", RRF_RT_REG_SZ, nullptr, buffer, &buffer_size) == ERROR_SUCCESS) {
+			ret = String::utf16((const char16_t *)buffer, buffer_size);
+		}
+	}
+
+	RegCloseKey(key);
+	return ret;
+}
+
+String DisplayServerWindows::_get_klid(HKL p_hkl) const {
 	String ret;
 
-	HKEY hkey;
-	WCHAR layout_text[1024];
-	memset(layout_text, 0, 1024 * sizeof(WCHAR));
+	WORD device = HIWORD(p_hkl);
+	if ((device & 0xf000) == 0xf000) {
+		WORD layout_id = device & 0x0fff;
 
-	if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, (LPCWSTR)(id.utf16().get_data()), 0, KEY_QUERY_VALUE, &hkey) != ERROR_SUCCESS) {
-		return ret;
+		HKEY key;
+		if (RegOpenKeyW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts", &key) != ERROR_SUCCESS) {
+			return String();
+		}
+
+		DWORD index = 0;
+		wchar_t klid_buffer[KL_NAMELENGTH];
+		DWORD klid_buffer_size = KL_NAMELENGTH;
+		while (RegEnumKeyExW(key, index, klid_buffer, &klid_buffer_size, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+			wchar_t layout_id_buf[MAX_PATH] = {};
+			DWORD layout_id_size = MAX_PATH;
+			if (RegGetValueW(key, klid_buffer, L"Layout Id", RRF_RT_REG_SZ, nullptr, layout_id_buf, &layout_id_size) == ERROR_SUCCESS) {
+				if (layout_id == String::utf16((char16_t *)layout_id_buf, layout_id_size).hex_to_int()) {
+					ret = String::utf16((const char16_t *)klid_buffer, klid_buffer_size).lpad(8, "0");
+					break;
+				}
+			}
+			klid_buffer_size = KL_NAMELENGTH;
+			++index;
+		}
+
+		RegCloseKey(key);
+	} else {
+		if (device == 0) {
+			device = LOWORD(p_hkl);
+		}
+		ret = (String::num_uint64((uint64_t)device, 16, false)).lpad(8, "0");
 	}
 
-	DWORD buffer = 1024;
-	DWORD vtype = REG_SZ;
-	if (RegQueryValueExW(hkey, L"Layout Text", nullptr, &vtype, (LPBYTE)layout_text, &buffer) == ERROR_SUCCESS) {
-		ret = String::utf16((const char16_t *)layout_text);
-	}
-	RegCloseKey(hkey);
 	return ret;
 }
 
@@ -2939,7 +3127,7 @@ String DisplayServerWindows::keyboard_get_layout_name(int p_index) const {
 	HKL *layouts = (HKL *)memalloc(layout_count * sizeof(HKL));
 	GetKeyboardLayoutList(layout_count, layouts);
 
-	String ret = _get_full_layout_name_from_registry(layouts[p_index]); // Try reading full name from Windows registry, fallback to locale name if failed (e.g. on Wine).
+	String ret = _get_keyboard_layout_display_name(_get_klid(layouts[p_index])); // Try reading full name from Windows registry, fallback to locale name if failed (e.g. on Wine).
 	if (ret.is_empty()) {
 		WCHAR buf[LOCALE_NAME_MAX_LENGTH];
 		memset(buf, 0, LOCALE_NAME_MAX_LENGTH * sizeof(WCHAR));
@@ -2975,6 +3163,22 @@ void DisplayServerWindows::process_events() {
 		_process_key_events();
 		Input::get_singleton()->flush_buffered_events();
 	}
+
+	LocalVector<List<FileDialogData *>::Element *> to_remove;
+	for (List<FileDialogData *>::Element *E = file_dialogs.front(); E; E = E->next()) {
+		FileDialogData *fd = E->get();
+		if (fd->finished.is_set()) {
+			if (fd->listener_thread.is_started()) {
+				fd->listener_thread.wait_to_finish();
+			}
+			to_remove.push_back(E);
+		}
+	}
+	for (List<FileDialogData *>::Element *E : to_remove) {
+		memdelete(E->get());
+		E->erase();
+	}
+	process_file_dialog_callbacks();
 }
 
 void DisplayServerWindows::force_process_and_drop_events() {
@@ -3807,9 +4011,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 		case WM_ACTIVATE: {
 			// Activation can happen just after the window has been created, even before the callbacks are set.
 			// Therefore, it's safer to defer the delivery of the event.
-			if (!windows[window_id].activate_timer_id) {
-				windows[window_id].activate_timer_id = SetTimer(windows[window_id].hWnd, 1, USER_TIMER_MINIMUM, (TIMERPROC) nullptr);
-			}
+			// It's important to set an nIDEvent different from the SetTimer for move_timer_id because
+			// if the same nIDEvent is passed, the timer is replaced and the same timer_id is returned.
+			windows[window_id].activate_timer_id = SetTimer(windows[window_id].hWnd, DisplayServerWindows::TIMER_ID_WINDOW_ACTIVATION, USER_TIMER_MINIMUM, (TIMERPROC) nullptr);
 			windows[window_id].activate_state = GET_WM_ACTIVATE_STATE(wParam, lParam);
 			return 0;
 		} break;
@@ -4160,6 +4364,7 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 					mm->set_relative_screen_position(mm->get_relative());
 					old_x = mm->get_position().x;
 					old_y = mm->get_position().y;
+
 					if (windows[window_id].window_focused || window_get_active_popup() == window_id) {
 						Input::get_singleton()->parse_input_event(mm);
 					}
@@ -4186,11 +4391,126 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				break;
 			}
 
+			pointer_button[GET_POINTERID_WPARAM(wParam)] = MouseButton::NONE;
 			windows[window_id].block_mm = true;
 			return 0;
 		} break;
 		case WM_POINTERLEAVE: {
+			pointer_button[GET_POINTERID_WPARAM(wParam)] = MouseButton::NONE;
 			windows[window_id].block_mm = false;
+			return 0;
+		} break;
+		case WM_POINTERDOWN:
+		case WM_POINTERUP: {
+			if (mouse_mode == MOUSE_MODE_CAPTURED && use_raw_input) {
+				break;
+			}
+
+			if ((tablet_get_current_driver() != "winink") || !winink_available) {
+				break;
+			}
+
+			uint32_t pointer_id = LOWORD(wParam);
+			POINTER_INPUT_TYPE pointer_type = PT_POINTER;
+			if (!win8p_GetPointerType(pointer_id, &pointer_type)) {
+				break;
+			}
+
+			if (pointer_type != PT_PEN) {
+				break;
+			}
+
+			Ref<InputEventMouseButton> mb;
+			mb.instantiate();
+			mb->set_window_id(window_id);
+
+			BitField<MouseButtonMask> last_button_state = 0;
+			if (IS_POINTER_FIRSTBUTTON_WPARAM(wParam)) {
+				last_button_state.set_flag(MouseButtonMask::LEFT);
+				mb->set_button_index(MouseButton::LEFT);
+			}
+			if (IS_POINTER_SECONDBUTTON_WPARAM(wParam)) {
+				last_button_state.set_flag(MouseButtonMask::RIGHT);
+				mb->set_button_index(MouseButton::RIGHT);
+			}
+			if (IS_POINTER_THIRDBUTTON_WPARAM(wParam)) {
+				last_button_state.set_flag(MouseButtonMask::MIDDLE);
+				mb->set_button_index(MouseButton::MIDDLE);
+			}
+			if (IS_POINTER_FOURTHBUTTON_WPARAM(wParam)) {
+				last_button_state.set_flag(MouseButtonMask::MB_XBUTTON1);
+				mb->set_button_index(MouseButton::MB_XBUTTON1);
+			}
+			if (IS_POINTER_FIFTHBUTTON_WPARAM(wParam)) {
+				last_button_state.set_flag(MouseButtonMask::MB_XBUTTON2);
+				mb->set_button_index(MouseButton::MB_XBUTTON2);
+			}
+			mb->set_button_mask(last_button_state);
+
+			const BitField<WinKeyModifierMask> &mods = _get_mods();
+			mb->set_ctrl_pressed(mods.has_flag(WinKeyModifierMask::CTRL));
+			mb->set_shift_pressed(mods.has_flag(WinKeyModifierMask::SHIFT));
+			mb->set_alt_pressed(mods.has_flag(WinKeyModifierMask::ALT));
+			mb->set_meta_pressed(mods.has_flag(WinKeyModifierMask::META));
+
+			POINT coords; // Client coords.
+			coords.x = GET_X_LPARAM(lParam);
+			coords.y = GET_Y_LPARAM(lParam);
+
+			// Note: Handle popup closing here, since mouse event is not emulated and hook will not be called.
+			uint64_t delta = OS::get_singleton()->get_ticks_msec() - time_since_popup;
+			if (delta > 250) {
+				Point2i pos = Point2i(coords.x, coords.y) - _get_screens_origin();
+				List<WindowID>::Element *C = nullptr;
+				List<WindowID>::Element *E = popup_list.back();
+				// Find top popup to close.
+				while (E) {
+					// Popup window area.
+					Rect2i win_rect = Rect2i(window_get_position_with_decorations(E->get()), window_get_size_with_decorations(E->get()));
+					// Area of the parent window, which responsible for opening sub-menu.
+					Rect2i safe_rect = window_get_popup_safe_rect(E->get());
+					if (win_rect.has_point(pos)) {
+						break;
+					} else if (safe_rect != Rect2i() && safe_rect.has_point(pos)) {
+						break;
+					} else {
+						C = E;
+						E = E->prev();
+					}
+				}
+				if (C) {
+					_send_window_event(windows[C->get()], DisplayServerWindows::WINDOW_EVENT_CLOSE_REQUEST);
+				}
+			}
+
+			int64_t pen_id = GET_POINTERID_WPARAM(wParam);
+			if (uMsg == WM_POINTERDOWN) {
+				mb->set_pressed(true);
+				if (pointer_down_time.has(pen_id) && (pointer_prev_button[pen_id] == mb->get_button_index()) && (ABS(coords.y - pointer_last_pos[pen_id].y) < GetSystemMetrics(SM_CYDOUBLECLK)) && GetMessageTime() - pointer_down_time[pen_id] < (LONG)GetDoubleClickTime()) {
+					mb->set_double_click(true);
+					pointer_down_time[pen_id] = 0;
+				} else {
+					pointer_down_time[pen_id] = GetMessageTime();
+					pointer_prev_button[pen_id] = mb->get_button_index();
+					pointer_last_pos[pen_id] = Vector2(coords.x, coords.y);
+				}
+				pointer_button[pen_id] = mb->get_button_index();
+			} else {
+				if (!pointer_button.has(pen_id)) {
+					return 0;
+				}
+				mb->set_pressed(false);
+				mb->set_button_index(pointer_button[pen_id]);
+				pointer_button[pen_id] = MouseButton::NONE;
+			}
+
+			ScreenToClient(windows[window_id].hWnd, &coords);
+
+			mb->set_position(Vector2(coords.x, coords.y));
+			mb->set_global_position(Vector2(coords.x, coords.y));
+
+			Input::get_singleton()->parse_input_event(mb);
+
 			return 0;
 		} break;
 		case WM_POINTERUPDATE: {
@@ -4270,7 +4590,23 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 			mm->set_alt_pressed(mods.has_flag(WinKeyModifierMask::ALT));
 			mm->set_meta_pressed(mods.has_flag(WinKeyModifierMask::META));
 
-			mm->set_button_mask(mouse_get_button_state());
+			BitField<MouseButtonMask> last_button_state = 0;
+			if (IS_POINTER_FIRSTBUTTON_WPARAM(wParam)) {
+				last_button_state.set_flag(MouseButtonMask::LEFT);
+			}
+			if (IS_POINTER_SECONDBUTTON_WPARAM(wParam)) {
+				last_button_state.set_flag(MouseButtonMask::RIGHT);
+			}
+			if (IS_POINTER_THIRDBUTTON_WPARAM(wParam)) {
+				last_button_state.set_flag(MouseButtonMask::MIDDLE);
+			}
+			if (IS_POINTER_FOURTHBUTTON_WPARAM(wParam)) {
+				last_button_state.set_flag(MouseButtonMask::MB_XBUTTON1);
+			}
+			if (IS_POINTER_FIFTHBUTTON_WPARAM(wParam)) {
+				last_button_state.set_flag(MouseButtonMask::MB_XBUTTON2);
+			}
+			mm->set_button_mask(last_button_state);
 
 			POINT coords; // Client coords.
 			coords.x = GET_X_LPARAM(lParam);
@@ -4441,6 +4777,7 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				mm->set_position(mm->get_position() - window_get_position(receiving_window_id) + window_get_position(window_id));
 				mm->set_global_position(mm->get_position());
 			}
+
 			Input::get_singleton()->parse_input_event(mm);
 
 		} break;
@@ -4625,6 +4962,16 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				Input::get_singleton()->parse_input_event(mbd);
 			}
 
+			// Propagate the button up event to the window on which the button down
+			// event was triggered. This is needed for drag & drop to work between windows,
+			// because the engine expects events to keep being processed
+			// on the same window dragging started.
+			if (mb->is_pressed()) {
+				last_mouse_button_down_window = window_id;
+			} else if (last_mouse_button_down_window != INVALID_WINDOW_ID) {
+				mb->set_window_id(last_mouse_button_down_window);
+				last_mouse_button_down_window = INVALID_WINDOW_ID;
+			}
 		} break;
 
 		case WM_WINDOWPOSCHANGED: {
@@ -4685,16 +5032,16 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 					rect_changed = true;
 				}
 #if defined(RD_ENABLED)
-				if (rendering_context && window.context_created) {
+				if (window.create_completed && rendering_context && window.context_created) {
 					// Note: Trigger resize event to update swapchains when window is minimized/restored, even if size is not changed.
 					rendering_context->window_set_size(window_id, window.width, window.height);
 				}
 #endif
 #if defined(GLES3_ENABLED)
-				if (gl_manager_native) {
+				if (window.create_completed && gl_manager_native) {
 					gl_manager_native->window_resize(window_id, window.width, window.height);
 				}
-				if (gl_manager_angle) {
+				if (window.create_completed && gl_manager_angle) {
 					gl_manager_angle->window_resize(window_id, window.width, window.height);
 				}
 #endif
@@ -4727,7 +5074,7 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 
 		case WM_ENTERSIZEMOVE: {
 			Input::get_singleton()->release_pressed_events();
-			windows[window_id].move_timer_id = SetTimer(windows[window_id].hWnd, 1, USER_TIMER_MINIMUM, (TIMERPROC) nullptr);
+			windows[window_id].move_timer_id = SetTimer(windows[window_id].hWnd, DisplayServerWindows::TIMER_ID_MOVE_REDRAW, USER_TIMER_MINIMUM, (TIMERPROC) nullptr);
 		} break;
 		case WM_EXITSIZEMOVE: {
 			KillTimer(windows[window_id].hWnd, windows[window_id].move_timer_id);
@@ -5159,7 +5506,7 @@ void DisplayServerWindows::_update_tablet_ctx(const String &p_old_driver, const 
 	}
 }
 
-DisplayServer::WindowID DisplayServerWindows::_create_window(WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Rect2i &p_rect) {
+DisplayServer::WindowID DisplayServerWindows::_create_window(WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Rect2i &p_rect, bool p_exclusive, WindowID p_transient_parent) {
 	DWORD dwExStyle;
 	DWORD dwStyle;
 
@@ -5209,6 +5556,20 @@ DisplayServer::WindowID DisplayServerWindows::_create_window(WindowMode p_mode, 
 
 	WindowID id = window_id_counter;
 	{
+		WindowData *wd_transient_parent = nullptr;
+		HWND owner_hwnd = nullptr;
+		if (p_transient_parent != INVALID_WINDOW_ID) {
+			if (!windows.has(p_transient_parent)) {
+				ERR_PRINT("Condition \"!windows.has(p_transient_parent)\" is true.");
+				p_transient_parent = INVALID_WINDOW_ID;
+			} else {
+				wd_transient_parent = &windows[p_transient_parent];
+				if (p_exclusive) {
+					owner_hwnd = wd_transient_parent->hWnd;
+				}
+			}
+		}
+
 		WindowData &wd = windows[id];
 
 		wd.hWnd = CreateWindowExW(
@@ -5219,7 +5580,7 @@ DisplayServer::WindowID DisplayServerWindows::_create_window(WindowMode p_mode, 
 				WindowRect.top,
 				WindowRect.right - WindowRect.left,
 				WindowRect.bottom - WindowRect.top,
-				nullptr,
+				owner_hwnd,
 				nullptr,
 				hInstance,
 				// tunnel the WindowData we need to handle creation message
@@ -5241,10 +5602,19 @@ DisplayServer::WindowID DisplayServerWindows::_create_window(WindowMode p_mode, 
 			wd.pre_fs_valid = true;
 		}
 
+		wd.exclusive = p_exclusive;
+		if (wd_transient_parent) {
+			wd.transient_parent = p_transient_parent;
+			wd_transient_parent->transient_children.insert(id);
+		}
+
 		if (is_dark_mode_supported() && dark_title_available) {
 			BOOL value = is_dark_mode();
 			::DwmSetWindowAttribute(wd.hWnd, use_legacy_dark_mode_before_20H1 ? DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 : DWMWA_USE_IMMERSIVE_DARK_MODE, &value, sizeof(value));
 		}
+
+		RECT real_client_rect;
+		GetClientRect(wd.hWnd, &real_client_rect);
 
 #ifdef RD_ENABLED
 		if (rendering_context) {
@@ -5275,7 +5645,7 @@ DisplayServer::WindowID DisplayServerWindows::_create_window(WindowMode p_mode, 
 				return INVALID_WINDOW_ID;
 			}
 
-			rendering_context->window_set_size(id, WindowRect.right - WindowRect.left, WindowRect.bottom - WindowRect.top);
+			rendering_context->window_set_size(id, real_client_rect.right - real_client_rect.left, real_client_rect.bottom - real_client_rect.top);
 			rendering_context->window_set_vsync_mode(id, p_vsync_mode);
 			wd.context_created = true;
 		}
@@ -5283,7 +5653,7 @@ DisplayServer::WindowID DisplayServerWindows::_create_window(WindowMode p_mode, 
 
 #ifdef GLES3_ENABLED
 		if (gl_manager_native) {
-			if (gl_manager_native->window_create(id, wd.hWnd, hInstance, WindowRect.right - WindowRect.left, WindowRect.bottom - WindowRect.top) != OK) {
+			if (gl_manager_native->window_create(id, wd.hWnd, hInstance, real_client_rect.right - real_client_rect.left, real_client_rect.bottom - real_client_rect.top) != OK) {
 				memdelete(gl_manager_native);
 				gl_manager_native = nullptr;
 				windows.erase(id);
@@ -5293,7 +5663,7 @@ DisplayServer::WindowID DisplayServerWindows::_create_window(WindowMode p_mode, 
 		}
 
 		if (gl_manager_angle) {
-			if (gl_manager_angle->window_create(id, nullptr, wd.hWnd, WindowRect.right - WindowRect.left, WindowRect.bottom - WindowRect.top) != OK) {
+			if (gl_manager_angle->window_create(id, nullptr, wd.hWnd, real_client_rect.right - real_client_rect.left, real_client_rect.bottom - real_client_rect.top) != OK) {
 				memdelete(gl_manager_angle);
 				gl_manager_angle = nullptr;
 				windows.erase(id);
@@ -5355,7 +5725,7 @@ DisplayServer::WindowID DisplayServerWindows::_create_window(WindowMode p_mode, 
 			PROPVARIANT val;
 			String appname;
 			if (Engine::get_singleton()->is_editor_hint()) {
-				appname = "Godot.GodotEditor." + String(VERSION_BRANCH);
+				appname = "Godot.GodotEditor." + String(VERSION_FULL_CONFIG);
 			} else {
 				String name = GLOBAL_GET("application/config/name");
 				String version = GLOBAL_GET("application/config/version");
@@ -5402,6 +5772,7 @@ DisplayServer::WindowID DisplayServerWindows::_create_window(WindowMode p_mode, 
 			SetWindowPos(wd.hWnd, HWND_TOP, srect.position.x, srect.position.y, srect.size.width, srect.size.height, SWP_NOZORDER | SWP_NOACTIVATE);
 		}
 
+		wd.create_completed = true;
 		window_id_counter++;
 	}
 
@@ -5431,6 +5802,9 @@ GetPointerTypePtr DisplayServerWindows::win8p_GetPointerType = nullptr;
 GetPointerPenInfoPtr DisplayServerWindows::win8p_GetPointerPenInfo = nullptr;
 LogicalToPhysicalPointForPerMonitorDPIPtr DisplayServerWindows::win81p_LogicalToPhysicalPointForPerMonitorDPI = nullptr;
 PhysicalToLogicalPointForPerMonitorDPIPtr DisplayServerWindows::win81p_PhysicalToLogicalPointForPerMonitorDPI = nullptr;
+
+// Shell API,
+SHLoadIndirectStringPtr DisplayServerWindows::load_indirect_string = nullptr;
 
 Vector2i _get_device_ids(const String &p_device_name) {
 	if (p_device_name.is_empty()) {
@@ -5493,12 +5867,6 @@ Vector2i _get_device_ids(const String &p_device_name) {
 
 	return ids;
 }
-
-typedef enum _SHC_PROCESS_DPI_AWARENESS {
-	SHC_PROCESS_DPI_UNAWARE = 0,
-	SHC_PROCESS_SYSTEM_DPI_AWARE = 1,
-	SHC_PROCESS_PER_MONITOR_DPI_AWARE = 2
-} SHC_PROCESS_DPI_AWARENESS;
 
 bool DisplayServerWindows::is_dark_mode_supported() const {
 	return ux_theme_available;
@@ -5603,6 +5971,12 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Win
 			}
 		}
 		FreeLibrary(nt_lib);
+	}
+
+	// Load Shell API.
+	HMODULE shellapi_lib = LoadLibraryW(L"shlwapi.dll");
+	if (shellapi_lib) {
+		load_indirect_string = (SHLoadIndirectStringPtr)GetProcAddress(shellapi_lib, "SHLoadIndirectString");
 	}
 
 	// Load UXTheme, available on Windows 10+ only.
@@ -5750,23 +6124,69 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Win
 
 	if (rendering_context) {
 		if (rendering_context->initialize() != OK) {
-			memdelete(rendering_context);
-			rendering_context = nullptr;
-			r_error = ERR_UNAVAILABLE;
-			return;
+			bool failed = true;
+#if defined(VULKAN_ENABLED)
+			bool fallback_to_vulkan = GLOBAL_GET("rendering/rendering_device/fallback_to_vulkan");
+			if (failed && fallback_to_vulkan && rendering_driver != "vulkan") {
+				memdelete(rendering_context);
+				rendering_context = memnew(RenderingContextDriverVulkanWindows);
+				if (rendering_context->initialize() == OK) {
+					WARN_PRINT("Your video card drivers seem not to support Direct3D 12, switching to Vulkan.");
+					rendering_driver = "vulkan";
+					failed = false;
+				}
+			}
+#endif
+#if defined(D3D12_ENABLED)
+			bool fallback_to_d3d12 = GLOBAL_GET("rendering/rendering_device/fallback_to_d3d12");
+			if (failed && fallback_to_d3d12 && rendering_driver != "d3d12") {
+				memdelete(rendering_context);
+				rendering_context = memnew(RenderingContextDriverD3D12);
+				if (rendering_context->initialize() == OK) {
+					WARN_PRINT("Your video card drivers seem not to support Vulkan, switching to Direct3D 12.");
+					rendering_driver = "d3d12";
+					failed = false;
+				}
+			}
+#endif
+			if (failed) {
+				memdelete(rendering_context);
+				rendering_context = nullptr;
+				r_error = ERR_UNAVAILABLE;
+				return;
+			}
 		}
 	}
 #endif
 // Init context and rendering device
 #if defined(GLES3_ENABLED)
 
-#if defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64)
-	// There's no native OpenGL drivers on Windows for ARM, switch to ANGLE over DX.
-	if (rendering_driver == "opengl3") {
-		rendering_driver = "opengl3_angle";
-	}
-#elif defined(EGL_STATIC)
 	bool fallback = GLOBAL_GET("rendering/gl_compatibility/fallback_to_angle");
+	bool show_warning = true;
+
+	if (rendering_driver == "opengl3") {
+		// There's no native OpenGL drivers on Windows for ARM, always enable fallback.
+#if defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64)
+		fallback = true;
+		show_warning = false;
+#else
+		typedef BOOL(WINAPI * IsWow64Process2Ptr)(HANDLE, USHORT *, USHORT *);
+
+		IsWow64Process2Ptr IsWow64Process2 = (IsWow64Process2Ptr)GetProcAddress(GetModuleHandle(TEXT("kernel32")), "IsWow64Process2");
+		if (IsWow64Process2) {
+			USHORT process_arch = 0;
+			USHORT machine_arch = 0;
+			if (!IsWow64Process2(GetCurrentProcess(), &process_arch, &machine_arch)) {
+				machine_arch = 0;
+			}
+			if (machine_arch == 0xAA64) {
+				fallback = true;
+				show_warning = false;
+			}
+		}
+#endif
+	}
+
 	if (fallback && (rendering_driver == "opengl3")) {
 		Dictionary gl_info = detect_wgl();
 
@@ -5792,11 +6212,12 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Win
 		}
 
 		if (force_angle || (gl_info["version"].operator int() < 30003)) {
-			WARN_PRINT("Your video card drivers seem not to support the required OpenGL 3.3 version, switching to ANGLE.");
+			if (show_warning) {
+				WARN_PRINT("Your video card drivers seem not to support the required OpenGL 3.3 version, switching to ANGLE.");
+			}
 			rendering_driver = "opengl3_angle";
 		}
 	}
-#endif
 
 	if (rendering_driver == "opengl3") {
 		gl_manager_native = memnew(GLManagerNative_Windows);
@@ -5826,7 +6247,7 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Win
 
 	String appname;
 	if (Engine::get_singleton()->is_editor_hint()) {
-		appname = "Godot.GodotEditor." + String(VERSION_BRANCH);
+		appname = "Godot.GodotEditor." + String(VERSION_FULL_CONFIG);
 	} else {
 		String name = GLOBAL_GET("application/config/name");
 		String version = GLOBAL_GET("application/config/version");
@@ -5841,6 +6262,17 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Win
 		}
 		clean_app_name = clean_app_name.substr(0, 120 - version.length()).trim_suffix(".");
 		appname = "Godot." + clean_app_name + "." + version;
+
+#ifndef TOOLS_ENABLED
+		// Set for exported projects only.
+		HKEY key;
+		if (RegOpenKeyW(HKEY_CURRENT_USER_LOCAL_SETTINGS, L"Software\\Microsoft\\Windows\\Shell\\MuiCache", &key) == ERROR_SUCCESS) {
+			Char16String cs_name = name.utf16();
+			String value_name = OS::get_singleton()->get_executable_path().replace("/", "\\") + ".FriendlyAppName";
+			RegSetValueExW(key, (LPCWSTR)value_name.utf16().get_data(), 0, REG_SZ, (const BYTE *)cs_name.get_data(), cs_name.size() * sizeof(WCHAR));
+			RegCloseKey(key);
+		}
+#endif
 	}
 	SetCurrentProcessExplicitAppUserModelID((PCWSTR)appname.utf16().get_data());
 
@@ -5857,7 +6289,7 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Win
 		window_position = scr_rect.position + (scr_rect.size - p_resolution) / 2;
 	}
 
-	WindowID main_window = _create_window(p_mode, p_vsync_mode, p_flags, Rect2i(window_position, p_resolution));
+	WindowID main_window = _create_window(p_mode, p_vsync_mode, p_flags, Rect2i(window_position, p_resolution), false, INVALID_WINDOW_ID);
 	ERR_FAIL_COND_MSG(main_window == INVALID_WINDOW_ID, "Failed to create main window.");
 
 	joypad = new JoypadWindows(&windows[MAIN_WINDOW_ID].hWnd);
@@ -5873,7 +6305,14 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Win
 #if defined(RD_ENABLED)
 	if (rendering_context) {
 		rendering_device = memnew(RenderingDevice);
-		rendering_device->initialize(rendering_context, MAIN_WINDOW_ID);
+		if (rendering_device->initialize(rendering_context, MAIN_WINDOW_ID) != OK) {
+			memdelete(rendering_device);
+			rendering_device = nullptr;
+			memdelete(rendering_context);
+			rendering_context = nullptr;
+			r_error = ERR_UNAVAILABLE;
+			return;
+		}
 		rendering_device->screen_create(MAIN_WINDOW_ID);
 
 		RendererCompositorRD::make_current();
@@ -5963,6 +6402,20 @@ void DisplayServerWindows::register_windows_driver() {
 }
 
 DisplayServerWindows::~DisplayServerWindows() {
+	LocalVector<List<FileDialogData *>::Element *> to_remove;
+	for (List<FileDialogData *>::Element *E = file_dialogs.front(); E; E = E->next()) {
+		FileDialogData *fd = E->get();
+		if (fd->listener_thread.is_started()) {
+			fd->close_requested.set();
+			fd->listener_thread.wait_to_finish();
+		}
+		to_remove.push_back(E);
+	}
+	for (List<FileDialogData *>::Element *E : to_remove) {
+		memdelete(E->get());
+		E->erase();
+	}
+
 	delete joypad;
 	touch_state.clear();
 

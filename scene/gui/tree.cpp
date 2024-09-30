@@ -2693,7 +2693,7 @@ void Tree::select_single_item(TreeItem *p_selected, TreeItem *p_current, int p_c
 				c.selected = true;
 				selected_item = p_selected;
 				if (!emitted_row) {
-					emit_signal(SNAME("item_selected"));
+					emit_signal(SceneStringName(item_selected));
 					emitted_row = true;
 				}
 			} else if (c.selected) {
@@ -2717,7 +2717,7 @@ void Tree::select_single_item(TreeItem *p_selected, TreeItem *p_current, int p_c
 					if (select_mode == SELECT_MULTI) {
 						emit_signal(SNAME("multi_selected"), p_current, i, true);
 					} else if (select_mode == SELECT_SINGLE) {
-						emit_signal(SNAME("item_selected"));
+						emit_signal(SceneStringName(item_selected));
 					}
 
 				} else if (select_mode == SELECT_MULTI && (selected_item != p_selected || selected_col != i)) {
@@ -3272,12 +3272,10 @@ void Tree::value_editor_changed(double p_value) {
 		return;
 	}
 
-	TreeItem::Cell &c = popup_edited_item->cells.write[popup_edited_item_col];
-	c.val = p_value;
+	const TreeItem::Cell &c = popup_edited_item->cells[popup_edited_item_col];
 
-	line_editor->set_text(String::num(c.val, Math::range_step_decimals(c.step)));
+	line_editor->set_text(String::num(p_value, Math::range_step_decimals(c.step)));
 
-	item_edited(popup_edited_item_col, popup_edited_item);
 	queue_redraw();
 }
 
@@ -3354,15 +3352,16 @@ void Tree::_go_up() {
 		prev = selected_item->get_prev_visible();
 	}
 
+	int col = MAX(selected_col, 0);
+
 	if (select_mode == SELECT_MULTI) {
 		if (!prev) {
 			return;
 		}
 
-		select_single_item(prev, get_root(), selected_col);
+		select_single_item(prev, get_root(), col);
 		queue_redraw();
 	} else {
-		int col = selected_col < 0 ? 0 : selected_col;
 		while (prev && !prev->cells[col].selectable) {
 			prev = prev->get_prev_visible();
 		}
@@ -3386,16 +3385,16 @@ void Tree::_go_down() {
 		next = selected_item->get_next_visible();
 	}
 
+	int col = MAX(selected_col, 0);
+
 	if (select_mode == SELECT_MULTI) {
 		if (!next) {
 			return;
 		}
 
-		select_single_item(next, get_root(), selected_col);
+		select_single_item(next, get_root(), col);
 		queue_redraw();
 	} else {
-		int col = selected_col < 0 ? 0 : selected_col;
-
 		while (next && !next->cells[col].selectable) {
 			next = next->get_next_visible();
 		}
@@ -4471,7 +4470,7 @@ TreeItem *Tree::get_last_item() const {
 	while (last) {
 		if (last->next) {
 			last = last->next;
-		} else if (last->first_child) {
+		} else if (last->first_child && !last->collapsed) {
 			last = last->first_child;
 		} else {
 			break;
@@ -4494,9 +4493,16 @@ void Tree::item_edited(int p_column, TreeItem *p_item, MouseButton p_custom_mous
 }
 
 void Tree::item_changed(int p_column, TreeItem *p_item) {
-	if (p_item != nullptr && p_column >= 0 && p_column < p_item->cells.size()) {
-		p_item->cells.write[p_column].dirty = true;
-		columns.write[p_column].cached_minimum_width_dirty = true;
+	if (p_item != nullptr) {
+		if (p_column >= 0 && p_column < p_item->cells.size()) {
+			p_item->cells.write[p_column].dirty = true;
+			columns.write[p_column].cached_minimum_width_dirty = true;
+		} else if (p_column == -1) {
+			for (int i = 0; i < p_item->cells.size(); i++) {
+				p_item->cells.write[i].dirty = true;
+				columns.write[i].cached_minimum_width_dirty = true;
+			}
+		}
 	}
 	queue_redraw();
 }
@@ -5439,6 +5445,24 @@ int Tree::get_drop_section_at_position(const Point2 &p_pos) const {
 	return -100;
 }
 
+bool Tree::can_drop_data(const Point2 &p_point, const Variant &p_data) const {
+	if (drag_touching) {
+		// Disable data drag & drop when touch dragging.
+		return false;
+	}
+
+	return Control::can_drop_data(p_point, p_data);
+}
+
+Variant Tree::get_drag_data(const Point2 &p_point) {
+	if (drag_touching) {
+		// Disable data drag & drop when touch dragging.
+		return Variant();
+	}
+
+	return Control::get_drag_data(p_point);
+}
+
 TreeItem *Tree::get_item_at_position(const Point2 &p_pos) const {
 	if (root) {
 		Point2 pos = p_pos;
@@ -5816,13 +5840,13 @@ Tree::Tree() {
 	range_click_timer->connect("timeout", callable_mp(this, &Tree::_range_click_timeout));
 	add_child(range_click_timer, false, INTERNAL_MODE_FRONT);
 
-	h_scroll->connect("value_changed", callable_mp(this, &Tree::_scroll_moved));
-	v_scroll->connect("value_changed", callable_mp(this, &Tree::_scroll_moved));
+	h_scroll->connect(SceneStringName(value_changed), callable_mp(this, &Tree::_scroll_moved));
+	v_scroll->connect(SceneStringName(value_changed), callable_mp(this, &Tree::_scroll_moved));
 	line_editor->connect("text_submitted", callable_mp(this, &Tree::_line_editor_submit));
 	text_editor->connect(SceneStringName(gui_input), callable_mp(this, &Tree::_text_editor_gui_input));
 	popup_editor->connect("popup_hide", callable_mp(this, &Tree::_text_editor_popup_modal_close));
 	popup_menu->connect(SceneStringName(id_pressed), callable_mp(this, &Tree::popup_select));
-	value_editor->connect("value_changed", callable_mp(this, &Tree::value_editor_changed));
+	value_editor->connect(SceneStringName(value_changed), callable_mp(this, &Tree::value_editor_changed));
 
 	set_notify_transform(true);
 

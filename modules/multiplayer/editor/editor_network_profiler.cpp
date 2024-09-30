@@ -74,8 +74,8 @@ void EditorNetworkProfiler::_update_theme_item_cache() {
 	theme_cache.incoming_bandwidth_icon = get_theme_icon(SNAME("ArrowDown"), EditorStringName(EditorIcons));
 	theme_cache.outgoing_bandwidth_icon = get_theme_icon(SNAME("ArrowUp"), EditorStringName(EditorIcons));
 
-	theme_cache.incoming_bandwidth_color = get_theme_color(SNAME("font_color"), EditorStringName(Editor));
-	theme_cache.outgoing_bandwidth_color = get_theme_color(SNAME("font_color"), EditorStringName(Editor));
+	theme_cache.incoming_bandwidth_color = get_theme_color(SceneStringName(font_color), EditorStringName(Editor));
+	theme_cache.outgoing_bandwidth_color = get_theme_color(SceneStringName(font_color), EditorStringName(Editor));
 }
 
 void EditorNetworkProfiler::_refresh() {
@@ -227,10 +227,10 @@ void EditorNetworkProfiler::add_sync_frame_data(const SyncInfo &p_frame) {
 		sync_data[p_frame.synchronizer].outgoing_syncs += p_frame.outgoing_syncs;
 	}
 	SyncInfo &info = sync_data[p_frame.synchronizer];
-	if (info.incoming_syncs) {
+	if (p_frame.incoming_syncs) {
 		info.incoming_size = p_frame.incoming_size / p_frame.incoming_syncs;
 	}
-	if (info.outgoing_syncs) {
+	if (p_frame.outgoing_syncs) {
 		info.outgoing_size = p_frame.outgoing_size / p_frame.outgoing_syncs;
 	}
 }

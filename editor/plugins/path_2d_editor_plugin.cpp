@@ -197,12 +197,7 @@ bool Path2DEditor::forward_gui_input(const Ref<InputEvent> &p_event) {
 			const Vector2 new_point = xform.affine_inverse().xform(gpoint2);
 			curve->add_point(new_point, Vector2(0, 0), Vector2(0, 0), insertion_point + 1);
 
-			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-			undo_redo->create_action(TTR("Split Curve"));
-			undo_redo->add_do_method(curve.ptr(), "add_point", new_point, Vector2(0, 0), Vector2(0, 0), insertion_point + 1);
-			undo_redo->add_undo_method(curve.ptr(), "remove_point", insertion_point + 1);
-
-			action = ACTION_MOVING_NEW_POINT;
+			action = ACTION_MOVING_NEW_POINT_FROM_SPLIT;
 			action_point = insertion_point + 1;
 			moving_from = curve->get_point_position(action_point);
 			moving_screen_from = gpoint2;
@@ -241,6 +236,16 @@ bool Path2DEditor::forward_gui_input(const Ref<InputEvent> &p_event) {
 					undo_redo->add_do_method(curve.ptr(), "set_point_position", action_point, cpoint);
 					undo_redo->add_do_method(canvas_item_editor, "update_viewport");
 					undo_redo->add_undo_method(curve.ptr(), "remove_point", curve->get_point_count() - 1);
+					undo_redo->add_undo_method(canvas_item_editor, "update_viewport");
+					undo_redo->commit_action(false);
+				} break;
+
+				case ACTION_MOVING_NEW_POINT_FROM_SPLIT: {
+					undo_redo->create_action(TTR("Split Curve"));
+					undo_redo->add_do_method(curve.ptr(), "add_point", Vector2(), Vector2(), Vector2(), action_point);
+					undo_redo->add_do_method(curve.ptr(), "set_point_position", action_point, cpoint);
+					undo_redo->add_undo_method(curve.ptr(), "remove_point", action_point);
+					undo_redo->add_do_method(canvas_item_editor, "update_viewport");
 					undo_redo->add_undo_method(canvas_item_editor, "update_viewport");
 					undo_redo->commit_action(false);
 				} break;
@@ -350,7 +355,8 @@ bool Path2DEditor::forward_gui_input(const Ref<InputEvent> &p_event) {
 					break;
 
 				case ACTION_MOVING_POINT:
-				case ACTION_MOVING_NEW_POINT: {
+				case ACTION_MOVING_NEW_POINT:
+				case ACTION_MOVING_NEW_POINT_FROM_SPLIT: {
 					curve->set_point_position(action_point, cpoint);
 				} break;
 
@@ -573,6 +579,10 @@ void Path2DEditor::_cancel_current_action() {
 			curve->remove_point(curve->get_point_count() - 1);
 		} break;
 
+		case ACTION_MOVING_NEW_POINT_FROM_SPLIT: {
+			curve->remove_point(action_point);
+		} break;
+
 		case ACTION_MOVING_IN: {
 			curve->set_point_in(action_point, moving_from);
 			curve->set_point_out(action_point, mirror_handle_length ? -moving_from : (-moving_from.normalized() * orig_out_length));
@@ -688,7 +698,7 @@ Path2DEditor::Path2DEditor() {
 	clear_points_dialog = memnew(ConfirmationDialog);
 	clear_points_dialog->set_title(TTR("Please Confirm..."));
 	clear_points_dialog->set_text(TTR("Remove all curve points?"));
-	clear_points_dialog->connect("confirmed", callable_mp(this, &Path2DEditor::_mode_selected).bind(MODE_CLEAR_POINTS));
+	clear_points_dialog->connect(SceneStringName(confirmed), callable_mp(this, &Path2DEditor::_mode_selected).bind(MODE_CLEAR_POINTS));
 	add_child(clear_points_dialog);
 
 	PopupMenu *menu;

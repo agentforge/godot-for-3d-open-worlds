@@ -62,6 +62,10 @@
 #define _EXT_DEBUG_SEVERITY_LOW_ARB 0x9148
 #define _EXT_DEBUG_OUTPUT 0x92E0
 
+#ifndef GL_FRAMEBUFFER_SRGB
+#define GL_FRAMEBUFFER_SRGB 0x8DB9
+#endif
+
 #ifndef GLAPIENTRY
 #if defined(WINDOWS_ENABLED)
 #define GLAPIENTRY APIENTRY
@@ -72,7 +76,7 @@
 
 #if !defined(IOS_ENABLED) && !defined(WEB_ENABLED)
 // We include EGL below to get debug callback on GLES2 platforms,
-// but EGL is not available on iOS.
+// but EGL is not available on iOS or the web.
 #define CAN_DEBUG
 #endif
 
@@ -107,7 +111,7 @@ void RasterizerGLES3::end_frame(bool p_swap_buffers) {
 	utils->capture_timestamps_end();
 }
 
-void RasterizerGLES3::end_viewport(bool p_swap_buffers) {
+void RasterizerGLES3::gl_end_frame(bool p_swap_buffers) {
 	if (p_swap_buffers) {
 		DisplayServer::get_singleton()->swap_buffers();
 	} else {
@@ -345,6 +349,9 @@ RasterizerGLES3::RasterizerGLES3() {
 		}
 	}
 
+	// Disable OpenGL linear to sRGB conversion, because Godot will always do this conversion itself.
+	glDisable(GL_FRAMEBUFFER_SRGB);
+
 	// OpenGL needs to be initialized before initializing the Rasterizers
 	config = memnew(GLES3::Config);
 	utilities = memnew(GLES3::Utilities);
@@ -398,8 +405,7 @@ void RasterizerGLES3::_blit_render_target_to_screen(RID p_render_target, Display
 			// Viewport doesn't cover entire window so clear window to black before blitting.
 			// Querying the actual window size from the DisplayServer would deadlock in separate render thread mode,
 			// so let's set the biggest viewport the implementation supports, to be sure the window is fully covered.
-			GLsizei max_vp[2] = {};
-			glGetIntegerv(GL_MAX_VIEWPORT_DIMS, max_vp);
+			Size2i max_vp = GLES3::Utilities::get_singleton()->get_maximum_viewport_size();
 			glViewport(0, 0, max_vp[0], max_vp[1]);
 			glClearColor(0.0, 0.0, 0.0, 1.0);
 			glClear(GL_COLOR_BUFFER_BIT);
@@ -492,7 +498,7 @@ void RasterizerGLES3::set_boot_image(const Ref<Image> &p_image, const Color &p_c
 	copy_effects->copy_to_rect(screenrect);
 	glBindTexture(GL_TEXTURE_2D, 0);
 
-	end_viewport(true);
+	gl_end_frame(true);
 
 	texture_storage->texture_free(texture);
 }
