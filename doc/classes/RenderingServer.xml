@@ -2639,6 +2639,9 @@
 				  - Position + Custom data: 16 floats (12 floats for Transform3D, 4 floats of custom data)
 				  - Position + Vertex color + Custom data: 20 floats (12 floats for Transform3D, 4 floats for Color, 4 floats of custom data)
 				[/codeblock]
+				Instance transforms are in row-major order. Specifically:
+				- For [Transform2D] the float-order is: [code](x.x, y.x, padding_float, origin.x, x.y, y.y, padding_float, origin.y)[/code].
+				- For [Transform3D] the float-order is: [code](basis.x.x, basis.y.x, basis.z.x, origin.x, basis.x.y, basis.y.y, basis.z.y, origin.y, basis.x.z, basis.y.z, basis.z.z, origin.z)[/code].
 			</description>
 		</method>
 		<method name="multimesh_set_buffer_interpolated">
@@ -5219,7 +5222,7 @@
 			Output color as they came in. This can cause bright lighting to look blown out, with noticeable clipping in the output colors.
 		</constant>
 		<constant name="ENV_TONE_MAPPER_REINHARD" value="1" enum="EnvironmentToneMapper">
-			Use the Reinhard tonemapper. Performs a variation on rendered pixels' colors by this formula: [code]color = color / (1 + color)[/code]. This avoids clipping bright highlights, but the resulting image can look a bit dull.
+			Use the Reinhard tonemapper. Performs a variation on rendered pixels' colors by this formula: [code]color = color * (1 + color / (white * white)) / (1 + color)[/code]. This avoids clipping bright highlights, but the resulting image can look a bit dull. When [member Environment.tonemap_white] is left at the default value of [code]1.0[/code] this is identical to [constant ENV_TONE_MAPPER_LINEAR] while also being slightly less performant.
 		</constant>
 		<constant name="ENV_TONE_MAPPER_FILMIC" value="2" enum="EnvironmentToneMapper">
 			Use the filmic tonemapper. This avoids clipping bright highlights, with a resulting image that usually looks more vivid than [constant ENV_TONE_MAPPER_REINHARD].

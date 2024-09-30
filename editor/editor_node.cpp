@@ -1007,9 +1007,17 @@ void EditorNode::_fs_changed() {
 				export_preset->update_value_overrides();
 				if (export_defer.pack_only) { // Only export .pck or .zip data pack.
 					if (export_path.ends_with(".zip")) {
-						err = platform->export_zip(export_preset, export_defer.debug, export_path);
+						if (export_defer.patch) {
+							err = platform->export_zip_patch(export_preset, export_defer.debug, export_path, export_defer.patches);
+						} else {
+							err = platform->export_zip(export_preset, export_defer.debug, export_path);
+						}
 					} else if (export_path.ends_with(".pck")) {
-						err = platform->export_pack(export_preset, export_defer.debug, export_path);
+						if (export_defer.patch) {
+							err = platform->export_pack_patch(export_preset, export_defer.debug, export_path, export_defer.patches);
+						} else {
+							err = platform->export_pack(export_preset, export_defer.debug, export_path);
+						}
 					} else {
 						ERR_PRINT(vformat("Export path \"%s\" doesn't end with a supported extension.", export_path));
 						err = FAILED;
@@ -1202,7 +1210,7 @@ void EditorNode::_reload_modified_scenes() {
 			editor_data.set_edited_scene(i);
 			_remove_edited_scene(false);
 
-			Error err = load_scene(filename, false, false, true, false, true);
+			Error err = load_scene(filename, false, false, false, true);
 			if (err != OK) {
 				ERR_PRINT(vformat("Failed to load scene: %s", filename));
 			}
@@ -3931,7 +3939,7 @@ int EditorNode::new_scene() {
 	return idx;
 }
 
-Error EditorNode::load_scene(const String &p_scene, bool p_ignore_broken_deps, bool p_set_inherited, bool p_clear_errors, bool p_force_open_imported, bool p_silent_change_tab) {
+Error EditorNode::load_scene(const String &p_scene, bool p_ignore_broken_deps, bool p_set_inherited, bool p_force_open_imported, bool p_silent_change_tab) {
 	if (!is_inside_tree()) {
 		defer_load_scene = p_scene;
 		return OK;
@@ -3952,10 +3960,6 @@ Error EditorNode::load_scene(const String &p_scene, bool p_ignore_broken_deps, b
 			open_import_request = p_scene;
 			return OK;
 		}
-	}
-
-	if (p_clear_errors && !load_errors_queued_to_display) {
-		load_errors->clear();
 	}
 
 	String lpath = ProjectSettings::get_singleton()->localize_path(p_scene);
@@ -4935,6 +4939,12 @@ void EditorNode::_progress_dialog_visibility_changed() {
 	}
 }
 
+void EditorNode::_load_error_dialog_visibility_changed() {
+	if (!load_error_dialog->is_visible()) {
+		load_errors->clear();
+	}
+}
+
 String EditorNode::_get_system_info() const {
 	String distribution_name = OS::get_singleton()->get_distribution_name();
 	if (distribution_name.is_empty()) {
@@ -5147,12 +5157,14 @@ void EditorNode::_begin_first_scan() {
 	requested_first_scan = true;
 }
 
-Error EditorNode::export_preset(const String &p_preset, const String &p_path, bool p_debug, bool p_pack_only, bool p_android_build_template) {
+Error EditorNode::export_preset(const String &p_preset, const String &p_path, bool p_debug, bool p_pack_only, bool p_android_build_template, bool p_patch, const Vector<String> &p_patches) {
 	export_defer.preset = p_preset;
 	export_defer.path = p_path;
 	export_defer.debug = p_debug;
 	export_defer.pack_only = p_pack_only;
 	export_defer.android_build_template = p_android_build_template;
+	export_defer.patch = p_patch;
+	export_defer.patches = p_patches;
 	cmdline_export_mode = true;
 	return OK;
 }
@@ -5915,7 +5927,7 @@ void EditorNode::reload_scene(const String &p_path) {
 
 	// Reload scene.
 	_remove_scene(scene_idx, false);
-	load_scene(p_path, true, false, true, true);
+	load_scene(p_path, true, false, true);
 
 	// Adjust index so tab is back a the previous position.
 	editor_data.move_edited_scene_to_index(scene_idx);
@@ -6441,7 +6453,7 @@ void EditorNode::_inherit_imported(const String &p_action) {
 }
 
 void EditorNode::_open_imported() {
-	load_scene(open_import_request, true, false, true, true);
+	load_scene(open_import_request, true, false, true);
 }
 
 void EditorNode::dim_editor(bool p_dimming) {
@@ -7848,6 +7860,7 @@ EditorNode::EditorNode() {
 	load_error_dialog->set_unparent_when_invisible(true);
 	load_error_dialog->add_child(load_errors);
 	load_error_dialog->set_title(TTR("Load Errors"));
+	load_error_dialog->connect(SceneStringName(visibility_changed), callable_mp(this, &EditorNode::_load_error_dialog_visibility_changed));
 
 	execute_outputs = memnew(RichTextLabel);
 	execute_outputs->set_selection_enabled(true);
