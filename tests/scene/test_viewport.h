@@ -38,6 +38,7 @@
 #include "scene/main/canvas_layer.h"
 #include "scene/main/window.h"
 #include "scene/resources/2d/rectangle_shape_2d.h"
+#include "servers/physics_server_2d_dummy.h"
 
 #include "tests/test_macros.h"
 
@@ -1340,8 +1341,8 @@ TEST_CASE("[SceneTree][Viewport] Controls and InputEvent handling") {
 				SEND_GUI_MOUSE_MOTION_EVENT(on_d, MouseButtonMask::NONE, Key::NONE);
 
 				// Force Drop doesn't get triggered by mouse Buttons other than LMB.
-				SEND_GUI_MOUSE_BUTTON_EVENT(on_d, MouseButton::RIGHT, MouseButtonMask::RIGHT, Key::NONE);
-				SEND_GUI_MOUSE_BUTTON_RELEASED_EVENT(on_a, MouseButton::RIGHT, MouseButtonMask::NONE, Key::NONE);
+				SEND_GUI_MOUSE_BUTTON_EVENT(on_d, MouseButton::MIDDLE, MouseButtonMask::MIDDLE, Key::NONE);
+				SEND_GUI_MOUSE_BUTTON_RELEASED_EVENT(on_a, MouseButton::MIDDLE, MouseButtonMask::NONE, Key::NONE);
 				CHECK(root->gui_is_dragging());
 
 				// Force Drop with LMB-Down.
@@ -1350,6 +1351,15 @@ TEST_CASE("[SceneTree][Viewport] Controls and InputEvent handling") {
 				CHECK(root->gui_is_drag_successful());
 
 				SEND_GUI_MOUSE_BUTTON_RELEASED_EVENT(on_d, MouseButton::LEFT, MouseButtonMask::NONE, Key::NONE);
+
+				node_a->force_drag(SNAME("Drag Data"), nullptr);
+				CHECK(root->gui_is_dragging());
+
+				// Cancel with RMB.
+				SEND_GUI_MOUSE_BUTTON_EVENT(on_d, MouseButton::RIGHT, MouseButtonMask::RIGHT, Key::NONE);
+				CHECK_FALSE(root->gui_is_dragging());
+				CHECK_FALSE(root->gui_is_drag_successful());
+				SEND_GUI_MOUSE_BUTTON_RELEASED_EVENT(on_a, MouseButton::RIGHT, MouseButtonMask::NONE, Key::NONE);
 			}
 		}
 
@@ -1550,6 +1560,12 @@ int TestArea2D::counter = 0;
 TEST_CASE("[SceneTree][Viewport] Physics Picking 2D") {
 	// FIXME: MOUSE_MODE_CAPTURED if-conditions are not testable, because DisplayServerMock doesn't support it.
 
+	// NOTE: This test requires a real physics server.
+	PhysicsServer2DDummy *physics_server_2d_dummy = Object::cast_to<PhysicsServer2DDummy>(PhysicsServer2D::get_singleton());
+	if (physics_server_2d_dummy) {
+		return;
+	}
+
 	struct PickingCollider {
 		TestArea2D *a;
 		CollisionShape2D *c;
@@ -1570,7 +1586,7 @@ TEST_CASE("[SceneTree][Viewport] Physics Picking 2D") {
 		PickingCollider pc;
 		pc.a = memnew(TestArea2D);
 		pc.c = memnew(CollisionShape2D);
-		pc.r = Ref<RectangleShape2D>(memnew(RectangleShape2D));
+		pc.r.instantiate();
 		pc.r->set_size(Size2(150, 150));
 		pc.c->set_shape(pc.r);
 		pc.a->add_child(pc.c);

@@ -11,13 +11,12 @@ This fork is regularly synchronized with [4.x branch](https://github.com/godoten
 Available for Windows x86-64, Linux x86-32 and x86-64, Linux ARM32 and ARM64, Android ARM32 and ARM64.
 
 Implemented tweaks:
-* Far plane (z-far) upper limit is set to 9e18 meters.
+* Far plane (z-far) upper limit is set to 9e18 meters and tweaked for precision.
 * [Large World Coordinates](https://docs.godotengine.org/en/stable/tutorials/physics/large_world_coordinates.html) are used when compiling (double precision floats).
 * Increased editor zoom out distance to galactic scale (depth buffer must be adjusted for such scales, see below).
 * Increased editor zoom increment for faster zooming.
-* Implemented tweaks to mobile rendering backend to fix possible precission-related issues.
-* This 4.x fork build DOES NOT implement hard-coded logarithmic depth buffer.
-Waiting for reverse-z depth buffer to be implemented and pulled: https://github.com/godotengine/godot/pull/88328
+* Implemented tweaks to mobile rendering backend to fix possible precision-related issues.
+* This 4.x fork build DOES NOT implement hard-coded logarithmic depth buffer. You can implement it in your project shaders (see below).
 
 Suggested:
 * Use [logarithmic depth](https://outerra.blogspot.com/search?q=logarithmic&max-results=20&by-date=true) in your spatial shaders to achieve rendering at extreme distances
@@ -46,7 +45,7 @@ void fragment()
 
 ```
 
-* Use spatial shader material dithering for better de-banding on per-material basis.
+* Use spatial shader material dithering for better de-banding on per-material basis when using Vulkan mobile renderer.
 
 ```
 // Add this before your vertex shader.

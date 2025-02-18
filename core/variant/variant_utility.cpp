@@ -1370,8 +1370,12 @@ static _FORCE_INLINE_ Variant::Type get_ret_type_helper(void (*p_func)(P...)) {
 		static bool has_return_type() {                                                                          \
 			return true;                                                                                         \
 		}                                                                                                        \
-		static bool is_vararg() { return false; }                                                                \
-		static Variant::UtilityFunctionType get_type() { return m_category; }                                    \
+		static bool is_vararg() {                                                                                \
+			return false;                                                                                        \
+		}                                                                                                        \
+		static Variant::UtilityFunctionType get_type() {                                                         \
+			return m_category;                                                                                   \
+		}                                                                                                        \
 	};                                                                                                           \
 	register_utility_function<Func_##m_func>(#m_func, m_args)
 
@@ -1402,8 +1406,12 @@ static _FORCE_INLINE_ Variant::Type get_ret_type_helper(void (*p_func)(P...)) {
 		static bool has_return_type() {                                                                                 \
 			return true;                                                                                                \
 		}                                                                                                               \
-		static bool is_vararg() { return false; }                                                                       \
-		static Variant::UtilityFunctionType get_type() { return m_category; }                                           \
+		static bool is_vararg() {                                                                                       \
+			return false;                                                                                               \
+		}                                                                                                               \
+		static Variant::UtilityFunctionType get_type() {                                                                \
+			return m_category;                                                                                          \
+		}                                                                                                               \
 	};                                                                                                                  \
 	register_utility_function<Func_##m_func>(#m_func, m_args)
 
@@ -1436,8 +1444,12 @@ static _FORCE_INLINE_ Variant::Type get_ret_type_helper(void (*p_func)(P...)) {
 		static bool has_return_type() {                                                                                            \
 			return true;                                                                                                           \
 		}                                                                                                                          \
-		static bool is_vararg() { return false; }                                                                                  \
-		static Variant::UtilityFunctionType get_type() { return m_category; }                                                      \
+		static bool is_vararg() {                                                                                                  \
+			return false;                                                                                                          \
+		}                                                                                                                          \
+		static Variant::UtilityFunctionType get_type() {                                                                           \
+			return m_category;                                                                                                     \
+		}                                                                                                                          \
 	};                                                                                                                             \
 	register_utility_function<Func_##m_func>(#m_func, m_args)
 
@@ -1470,8 +1482,12 @@ static _FORCE_INLINE_ Variant::Type get_ret_type_helper(void (*p_func)(P...)) {
 		static bool has_return_type() {                                                                                                                                   \
 			return true;                                                                                                                                                  \
 		}                                                                                                                                                                 \
-		static bool is_vararg() { return false; }                                                                                                                         \
-		static Variant::UtilityFunctionType get_type() { return m_category; }                                                                                             \
+		static bool is_vararg() {                                                                                                                                         \
+			return false;                                                                                                                                                 \
+		}                                                                                                                                                                 \
+		static Variant::UtilityFunctionType get_type() {                                                                                                                  \
+			return m_category;                                                                                                                                            \
+		}                                                                                                                                                                 \
 	};                                                                                                                                                                    \
 	register_utility_function<Func_##m_func>(#m_func, m_args)
 
@@ -1633,8 +1649,12 @@ static _FORCE_INLINE_ Variant::Type get_ret_type_helper(void (*p_func)(P...)) {
 		static bool has_return_type() {                                                                          \
 			return false;                                                                                        \
 		}                                                                                                        \
-		static bool is_vararg() { return false; }                                                                \
-		static Variant::UtilityFunctionType get_type() { return m_category; }                                    \
+		static bool is_vararg() {                                                                                \
+			return false;                                                                                        \
+		}                                                                                                        \
+		static Variant::UtilityFunctionType get_type() {                                                         \
+			return m_category;                                                                                   \
+		}                                                                                                        \
 	};                                                                                                           \
 	register_utility_function<Func_##m_func>(#m_func, m_args)
 
@@ -1671,7 +1691,7 @@ static void register_utility_function(const String &p_name, const Vector<String>
 	bfi.argnames = argnames;
 	bfi.argcount = T::get_argument_count();
 	if (!bfi.is_vararg) {
-		ERR_FAIL_COND_MSG(argnames.size() != bfi.argcount, "wrong number of arguments binding utility function: " + name);
+		ERR_FAIL_COND_MSG(argnames.size() != bfi.argcount, vformat("Wrong number of arguments binding utility function: '%s'.", name));
 	}
 	bfi.get_arg_type = T::get_argument_type;
 	bfi.return_type = T::get_return_type();

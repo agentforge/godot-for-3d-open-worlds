@@ -36,7 +36,6 @@
 #include "core/config/project_settings.h"
 #include "core/string/ustring.h"
 #include "core/templates/hash_set.h"
-#include "core/templates/vector.h"
 
 #include "platform_gl.h"
 
@@ -80,6 +79,7 @@ public:
 	bool astc_supported = false;
 	bool astc_hdr_supported = false;
 	bool astc_layered_supported = false;
+	bool srgb_framebuffer_supported = false;
 
 	bool force_vertex_shading = false;
 
@@ -94,12 +94,15 @@ public:
 	bool multiview_supported = false;
 	bool external_texture_supported = false;
 
-	// Adreno 3XX compatibility
-	bool disable_particles_workaround = false; // set to 'true' to disable 'GPUParticles'
+	// Adreno 3XX compatibility.
+	bool disable_particles_workaround = false; // Set to 'true' to disable 'GPUParticles'.
 	bool flip_xy_workaround = false;
 
-	// PowerVR GE 8320 workaround
+	// PowerVR GE 8320 workaround.
 	bool disable_transform_feedback_shader_cache = false;
+
+	// ANGLE shader workaround.
+	bool polyfill_half2float = true;
 
 #ifdef ANDROID_ENABLED
 	PFNGLFRAMEBUFFERTEXTUREMULTIVIEWOVRPROC eglFramebufferTextureMultiviewOVR = nullptr;
@@ -109,7 +112,7 @@ public:
 	PFNEGLIMAGETARGETTEXTURE2DOESPROC eglEGLImageTargetTexture2DOES = nullptr;
 #endif
 
-	static Config *get_singleton() { return singleton; };
+	static Config *get_singleton() { return singleton; }
 
 	Config();
 	~Config();

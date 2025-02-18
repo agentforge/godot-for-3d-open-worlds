@@ -32,7 +32,6 @@
 
 #include "android_input_handler.h"
 #include "api/java_class_wrapper.h"
-#include "api/jni_singleton.h"
 #include "dir_access_jandroid.h"
 #include "display_server_android.h"
 #include "file_access_android.h"
@@ -43,7 +42,6 @@
 #include "net_socket_android.h"
 #include "os_android.h"
 #include "plugin/godot_plugin_jni.h"
-#include "string_android.h"
 #include "thread_jandroid.h"
 #include "tts_android.h"
 
@@ -209,8 +207,7 @@ JNIEXPORT jboolean JNICALL Java_org_godotengine_godot_GodotLib_setup(JNIEnv *env
 
 	TTS_Android::setup(p_godot_tts);
 
-	java_class_wrapper = memnew(JavaClassWrapper(godot_java->get_activity()));
-	GDREGISTER_CLASS(JNISingleton);
+	java_class_wrapper = memnew(JavaClassWrapper);
 	return true;
 }
 
@@ -490,55 +487,26 @@ JNIEXPORT jstring JNICALL Java_org_godotengine_godot_GodotLib_getEditorSetting(J
 	return env->NewStringUTF(editor_setting_value.utf8().get_data());
 }
 
-JNIEXPORT void JNICALL Java_org_godotengine_godot_GodotLib_callobject(JNIEnv *env, jclass clazz, jlong ID, jstring method, jobjectArray params) {
-	Object *obj = ObjectDB::get_instance(ObjectID(ID));
-	ERR_FAIL_NULL(obj);
-
-	String str_method = jstring_to_string(method, env);
-
-	int count = env->GetArrayLength(params);
-
-	Variant *vlist = (Variant *)alloca(sizeof(Variant) * count);
-	const Variant **vptr = (const Variant **)alloca(sizeof(Variant *) * count);
-
-	for (int i = 0; i < count; i++) {
-		jobject jobj = env->GetObjectArrayElement(params, i);
-		ERR_FAIL_NULL(jobj);
-		memnew_placement(&vlist[i], Variant(_jobject_to_variant(env, jobj)));
-		vptr[i] = &vlist[i];
-		env->DeleteLocalRef(jobj);
-	}
-
-	Callable::CallError err;
-	obj->callp(str_method, vptr, count, err);
-}
-
-JNIEXPORT void JNICALL Java_org_godotengine_godot_GodotLib_calldeferred(JNIEnv *env, jclass clazz, jlong ID, jstring method, jobjectArray params) {
-	Object *obj = ObjectDB::get_instance(ObjectID(ID));
-	ERR_FAIL_NULL(obj);
-
-	String str_method = jstring_to_string(method, env);
-
-	int count = env->GetArrayLength(params);
-
-	Variant *args = (Variant *)alloca(sizeof(Variant) * count);
-	const Variant **argptrs = (const Variant **)alloca(sizeof(Variant *) * count);
-
-	for (int i = 0; i < count; i++) {
-		jobject jobj = env->GetObjectArrayElement(params, i);
-		ERR_FAIL_NULL(jobj);
-		memnew_placement(&args[i], Variant(_jobject_to_variant(env, jobj)));
-		argptrs[i] = &args[i];
-		env->DeleteLocalRef(jobj);
-	}
-
-	Callable(obj, str_method).call_deferredp(argptrs, count);
-}
-
 JNIEXPORT void JNICALL Java_org_godotengine_godot_GodotLib_onNightModeChanged(JNIEnv *env, jclass clazz) {
 	DisplayServerAndroid *ds = (DisplayServerAndroid *)DisplayServer::get_singleton();
 	if (ds) {
 		ds->emit_system_theme_changed();
+	}
+}
+
+JNIEXPORT void JNICALL Java_org_godotengine_godot_GodotLib_filePickerCallback(JNIEnv *env, jclass clazz, jboolean p_ok, jobjectArray p_selected_paths) {
+	DisplayServerAndroid *ds = (DisplayServerAndroid *)DisplayServer::get_singleton();
+	if (ds) {
+		Vector<String> selected_paths;
+
+		jint length = env->GetArrayLength(p_selected_paths);
+		for (jint i = 0; i < length; ++i) {
+			jstring java_string = (jstring)env->GetObjectArrayElement(p_selected_paths, i);
+			String path = jstring_to_string(java_string, env);
+			selected_paths.push_back(path);
+			env->DeleteLocalRef(java_string);
+		}
+		ds->emit_file_picker_callback(p_ok, selected_paths);
 	}
 }
 

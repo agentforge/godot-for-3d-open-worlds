@@ -144,7 +144,6 @@ bool OpenXRCompositionLayerExtension::create_android_surface_swapchain(XrSwapcha
 		OpenXRAPI *openxr_api = OpenXRAPI::get_singleton();
 		ERR_FAIL_NULL_V(openxr_api, false);
 
-		// @todo We need a way to add to the next pointer chain.
 		XrResult result = xrCreateSwapchainAndroidSurfaceKHR(openxr_api->get_session(), p_info, r_swapchain, r_surface);
 		if (XR_FAILED(result)) {
 			print_line("OpenXR: Failed to create Android surface swapchain [", openxr_api->get_error_string(result), "]");
@@ -211,7 +210,7 @@ void OpenXRViewportCompositionLayerProvider::set_viewport(RID p_viewport, Size2i
 	if (subviewport.viewport != p_viewport) {
 		if (subviewport.viewport.is_valid()) {
 			RID rt = rs->viewport_get_render_target(subviewport.viewport);
-			RSG::texture_storage->render_target_set_override(rt, RID(), RID(), RID());
+			RSG::texture_storage->render_target_set_override(rt, RID(), RID(), RID(), RID());
 		}
 
 		subviewport.viewport = p_viewport;
@@ -254,11 +253,19 @@ void OpenXRViewportCompositionLayerProvider::create_android_surface() {
 	ERR_FAIL_COND(android_surface.swapchain != XR_NULL_HANDLE || android_surface.surface.is_valid());
 	ERR_FAIL_COND(!openxr_api || !openxr_api->is_running());
 
+	void *next_pointer = nullptr;
+	for (OpenXRExtensionWrapper *wrapper : openxr_api->get_registered_extension_wrappers()) {
+		void *np = wrapper->set_android_surface_swapchain_create_info_and_get_next_pointer(extension_property_values, next_pointer);
+		if (np != nullptr) {
+			next_pointer = np;
+		}
+	}
+
 	// The XR_FB_android_surface_swapchain_create extension mandates that format, sampleCount,
 	// faceCount, arraySize, and mipCount must be zero.
 	XrSwapchainCreateInfo info = {
 		XR_TYPE_SWAPCHAIN_CREATE_INFO, // type
-		nullptr, // next
+		next_pointer, // next
 		0, // createFlags
 		XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT, // usageFlags
 		0, // format
@@ -274,7 +281,7 @@ void OpenXRViewportCompositionLayerProvider::create_android_surface() {
 	composition_layer_extension->create_android_surface_swapchain(&info, &android_surface.swapchain, &surface);
 
 	if (surface) {
-		android_surface.surface = Ref<JavaObject>(memnew(JavaObject(JavaClassWrapper::get_singleton()->wrap("android.view.Surface"), surface)));
+		android_surface.surface.instantiate(JavaClassWrapper::get_singleton()->wrap("android.view.Surface"), surface);
 	}
 }
 #endif
@@ -316,7 +323,7 @@ void OpenXRViewportCompositionLayerProvider::on_pre_render() {
 			if (update_and_acquire_swapchain(update_mode == RS::VIEWPORT_UPDATE_ONCE)) {
 				// Render to our XR swapchain image.
 				RID rt = rs->viewport_get_render_target(subviewport.viewport);
-				RSG::texture_storage->render_target_set_override(rt, get_current_swapchain_texture(), RID(), RID());
+				RSG::texture_storage->render_target_set_override(rt, get_current_swapchain_texture(), RID(), RID(), RID());
 			}
 		}
 	}
@@ -334,7 +341,7 @@ XrCompositionLayerBaseHeader *OpenXRViewportCompositionLayerProvider::get_compos
 	}
 
 	XrSwapchainSubImage subimage = {
-		0, // swapchain
+		0, // swapchain // NOLINT(modernize-use-nullptr) - 32-bit uses non-pointer uint64
 		{ { 0, 0 }, { 0, 0 } }, // imageRect
 		0, // imageArrayIndex
 	};
